@@ -15,7 +15,7 @@
 nbmesh_t nb_mesh;
 
 #define QNAV_MAGIC   (('V'<<24)|('A'<<16)|('N'<<8)|'Q')
-#define QNAV_VERSION 7
+#define QNAV_VERSION 8
 
 static const vec3_t nb_hullmins = { -16, -16, -24 };
 static const vec3_t nb_hullmaxs = { 16, 16, 32 };
@@ -779,6 +779,7 @@ typedef struct
 	int magic, version;
 	unsigned int checksum;
 	unsigned int numareas, numlinks;
+	char gamedir[32];   /* meshes depend on the game code's entities: a qw mesh is no use to fortress */
 } qnavheader_t;
 
 typedef struct
@@ -805,6 +806,8 @@ qboolean NBNav_Save(void)
 	h.checksum = nb_mesh.bspchecksum;
 	h.numareas = nb_mesh.numareas;
 	h.numlinks = nb_mesh.numlinks;
+	memset(h.gamedir, 0, sizeof(h.gamedir));
+	Q_strncpyz(h.gamedir, FS_GetGamedir(true), sizeof(h.gamedir));
 	memcpy(p, &h, sizeof(h)); p += sizeof(h);
 	for (i = 0; i < nb_mesh.numareas; i++)
 	{
@@ -855,6 +858,11 @@ qboolean NBNav_Load(const char *mapname)
 		|| size != sizeof(h) + h.numareas * sizeof(qnavarea_t) + h.numlinks * sizeof(nblink_t))
 	{
 		Con_Printf("nav: %s is from another version, regenerate it\n", path);
+		BZ_Free(buf);
+		return false;
+	}
+	if (Q_strncasecmp(h.gamedir, FS_GetGamedir(true), sizeof(h.gamedir)))
+	{	/* found through another gamedir in the search path (qw under fortress) */
 		BZ_Free(buf);
 		return false;
 	}
