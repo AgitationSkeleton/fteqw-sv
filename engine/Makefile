@@ -728,7 +728,7 @@ ifeq ($(FTE_TARGET),SDL2)
 	BASE_CFLAGS+=-DLIBJPEG_STATIC -DLIBJPEG_STATIC -DLIBPNG_STATIC -DOPUS_STATIC -DSPEEX_STATIC -DFREETYPE_STATIC -DLIBVORBISFILE_STATIC
 endif
 
-VPATH := $(BASE_DIR) : $(CLIENT_DIR) : $(GL_DIR) : $(SW_DIR) : $(COMMON_DIR) : $(SERVER_DIR) : $(HTTP_DIR) : $(QUX_DIR) : $(PROGS_DIR) : $(D3D_DIR) : $(VK_DIR) : $(BASE_DIR)/web
+VPATH := $(BASE_DIR) : $(CLIENT_DIR) : $(GL_DIR) : $(SW_DIR) : $(COMMON_DIR) : $(SERVER_DIR) : $(SERVER_DIR)/nextbot : $(HTTP_DIR) : $(QUX_DIR) : $(PROGS_DIR) : $(D3D_DIR) : $(VK_DIR) : $(BASE_DIR)/web
 
 PROFILE_CFLAGS=-pg
 DX7SDK=-I./libs/dxsdk7/include/
@@ -969,6 +969,13 @@ COMMON_OBJS = \
 	glmod_doom.o 	\
 	world.o 		\
 	sv_phys.o 		\
+	nb_action.o	\
+	nb_nav.o	\
+	nb_path.o	\
+	nb_loco.o	\
+	nb_bot.o	\
+	nb_dm.o	\
+	nb_tf.o	\
 	sv_move.o 		\
 	pmove.o		\
 	pmovetst.o		\

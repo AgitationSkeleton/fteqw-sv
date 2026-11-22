@@ -1043,7 +1043,12 @@ void SV_Map_f (void)
 #endif
 
 	if (!isrestart)
+	{
+		if (Cmd_FromGamecode())
+			NB_MapcycleOverride(level, sizeof(level));	//game-code map changes follow mapcycle.txt
+		NB_PreMapChange();	//bots leave before the spawn parms are saved; the quota brings them back
 		SV_SaveSpawnparms ();
+	}
 
 #ifdef SAVEDGAMES
 	if (newunit)

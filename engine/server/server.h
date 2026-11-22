@@ -1723,3 +1723,5 @@ void SVHL_DropClient(client_t *drop);
 void SVHL_ShutdownGame(void);
 #endif
 
+
+#include "nextbot/nb_public.h"	//NextBot-style bots

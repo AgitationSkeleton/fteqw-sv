@@ -22,9 +22,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #ifndef CLIENTONLY
 
+static qboolean ClientReliable_IsBotTarget(client_t *cl)
+{
+	if (!cl)
+		return true;
+	if (cl->controller)
+		cl = cl->controller;
+	return cl->protocol == SCP_BAD;
+}
+
 // check to see if client block will fit, if not, rotate buffers
 void ClientReliableCheckBlock(client_t *cl, int maxsize)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf ||
 		cl->netchan.message.cursize > 
 		cl->netchan.message.maxsize - maxsize - 1)
@@ -66,6 +78,9 @@ void ClientReliableCheckBlock(client_t *cl, int maxsize)
 // begin a client block, estimated maximum size
 void ClientReliableWrite_Begin(client_t *cl, int c, int maxsize)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->controller)
 		Con_Printf("Writing %i to slave client's message buffer\n", c);
 	ClientReliableCheckBlock(cl, maxsize);
@@ -123,6 +138,9 @@ sizebuf_t *ClientReliable_StartWrite(client_t *cl, int maxsize)
 }
 void ClientReliable_FinishWrite(client_t *cl)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->controller)
 		cl = cl->controller;
 	if (cl->num_backbuf)
@@ -140,6 +158,9 @@ void ClientReliable_FinishWrite(client_t *cl)
 
 void ClientReliableWrite_Angle(client_t *cl, float f)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteAngle(&cl->backbuf, f);
@@ -151,6 +172,9 @@ void ClientReliableWrite_Angle(client_t *cl, float f)
 
 void ClientReliableWrite_Angle16(client_t *cl, float f)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteAngle16(&cl->backbuf, f);
@@ -162,6 +186,9 @@ void ClientReliableWrite_Angle16(client_t *cl, float f)
 
 void ClientReliableWrite_Byte(client_t *cl, int c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteByte(&cl->backbuf, c);
@@ -173,6 +200,9 @@ void ClientReliableWrite_Byte(client_t *cl, int c)
 
 void ClientReliableWrite_Char(client_t *cl, int c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteChar(&cl->backbuf, c);
@@ -184,6 +214,9 @@ void ClientReliableWrite_Char(client_t *cl, int c)
 
 void ClientReliableWrite_Double(client_t *cl, double f)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteDouble(&cl->backbuf, f);
@@ -195,6 +228,9 @@ void ClientReliableWrite_Double(client_t *cl, double f)
 
 void ClientReliableWrite_Float(client_t *cl, float f)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteFloat(&cl->backbuf, f);
@@ -206,6 +242,9 @@ void ClientReliableWrite_Float(client_t *cl, float f)
 
 void ClientReliableWrite_Coord(client_t *cl, float f)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteCoord(&cl->backbuf, f);
@@ -217,6 +256,9 @@ void ClientReliableWrite_Coord(client_t *cl, float f)
 
 void ClientReliableWrite_Int64(client_t *cl, qint64_t c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteInt64(&cl->backbuf, c);
@@ -227,6 +269,9 @@ void ClientReliableWrite_Int64(client_t *cl, qint64_t c)
 }
 void ClientReliableWrite_Long(client_t *cl, int c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteLong(&cl->backbuf, c);
@@ -238,6 +283,9 @@ void ClientReliableWrite_Long(client_t *cl, int c)
 
 void ClientReliableWrite_Short(client_t *cl, int c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteShort(&cl->backbuf, c);
@@ -248,6 +296,9 @@ void ClientReliableWrite_Short(client_t *cl, int c)
 }
 void ClientReliableWrite_Entity(client_t *cl, int c)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteEntity(&cl->backbuf, c);
@@ -259,6 +310,9 @@ void ClientReliableWrite_Entity(client_t *cl, int c)
 
 void ClientReliableWrite_String(client_t *cl, const char *s)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		MSG_WriteString(&cl->backbuf, s);
@@ -270,6 +324,9 @@ void ClientReliableWrite_String(client_t *cl, const char *s)
 
 void ClientReliableWrite_SZ(client_t *cl, const void *data, int len)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	if (cl->num_backbuf)
 	{
 		SZ_Write(&cl->backbuf, data, len);
@@ -286,6 +343,9 @@ void ClientReliableWrite_SZ(client_t *cl, const void *data, int len)
 
 void ClientReliableWrite_ZLib(client_t *cl, void *data, int len)
 {
+	if (ClientReliable_IsBotTarget(cl))
+		return;
+
 	int i;
 	char out[MAX_QWMSGLEN*2];
 

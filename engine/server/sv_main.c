@@ -619,7 +619,11 @@ void SV_DropClient (client_t *drop)
 		if (drop->spectator)
 			Con_TPrintf ("Spectator \"%s\" removed\n",drop->name);
 		else
+		{
 			Con_TPrintf ("Client \"%s\" removed\n",drop->name);
+			if (drop->protocol != SCP_BAD)
+				NB_DiscordPost(va("%s left.", drop->name));	//nextbot build: optional Discord webhook
+		}
 	}
 
 #if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
@@ -1224,7 +1228,7 @@ static void SVC_Status (void)
 	{
 		char infostr[1024];	//FIXME: vanilla limit is 512. we should probably have a list of known cvars for lower priority sending.
 		const char *ignorekeys[] = {"mapname", "*z_ext", NULL};	//ignore some pointless stuff
-		const char *prioritykeys[] = {"hostname", "admin", "*gamedir", "*version", "deathmatch", "timelimit", "fraglimit", "maxclients", "maxspectators", "status", NULL}; //make sure we include these before we start overflowing
+		const char *prioritykeys[] = {"hostname", "admin", "*gamedir", "*version", "deathmatch", "timelimit", "fraglimit", "maxclients", "maxspectators", "status", "map", NULL}; //make sure we include these before we start overflowing
 		InfoBuf_ToString(&svs.info, infostr, sizeof(infostr), prioritykeys, ignorekeys, NULL, NULL, NULL);
 		Con_Printf ("%s\n", infostr);
 	}
@@ -3307,6 +3311,8 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 	else
 	{
 		SV_BroadcastTPrintf(PRINT_LOW, "client %s connected\n", newcl->name);
+		if (newcl->protocol != SCP_BAD)
+			NB_DiscordPost(va("%s joined.", newcl->name));	//nextbot build: optional Discord webhook
 //			Con_DPrintf ("Client %s connected\n", newcl->name);
 	}
 	newcl->state = cs_connected;
@@ -6028,6 +6034,7 @@ void SV_InitLocal (void)
 	Cvar_Register (&pausable,	cvargroup_servercontrol);
 
 	Cvar_Register (&sv_maxrate, cvargroup_servercontrol);
+	NB_Init();	//nextbot: qw_bot_* cvars and commands
 	Cvar_Register (&sv_maxdrate, cvargroup_servercontrol);
 	Cvar_ForceCallback(&sv_maxrate);
 	Cvar_ForceCallback(&sv_maxdrate);

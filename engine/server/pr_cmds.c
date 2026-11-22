@@ -6286,7 +6286,11 @@ void QCBUILTIN PF_changelevel (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 			Cbuf_AddText (va("\nchangelevel %s %s\n", newmap, startspot), RESTRICT_LOCAL);
 		}
 		else
+		{
+			if (deathmatch.value)
+				NB_MapcycleOverride(newmap, sizeof(newmap));	//follow mapcycle.txt
 			Cbuf_AddText (va("\nchangelevel %s\n", newmap), RESTRICT_LOCAL);
+		}
 	}
 }
 

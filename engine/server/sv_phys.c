@@ -2641,12 +2641,13 @@ qboolean SV_Physics (void)
 			Q1QVM_StartFrame(true);
 		}
 #endif
+		NB_Frame();	//NextBot-style bots think and run their own usercmds
 		if (1)
 		{
 			memset(&ucmd, 0, sizeof(ucmd));
 			for (i = 0; i < sv.allocated_client_slots; i++)
 			{
-				if (svs.clients[i].state > cs_zombie && svs.clients[i].protocol == SCP_BAD && svs.clients[i].msecs >= 1000.0/77)
+				if (svs.clients[i].state > cs_zombie && svs.clients[i].protocol == SCP_BAD && svs.clients[i].msecs >= 1000.0/77 && !NB_OwnsClient(&svs.clients[i]))
 				{	//then this is a bot
 					oldhost = host_client;
 					oldplayer = sv_player;

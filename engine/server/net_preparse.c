@@ -1016,7 +1016,8 @@ void NPP_NQCheckDest(int dest)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("Not a client\n");
+			// Silently ignore MSG_ONE with no valid client (common in multiplayer bot scenarios)
+			// Con_Printf("Not a client\n");
 			return;
 		}
 		if (bufferlen && ((cldest && cldest != cl) || writedest))
@@ -1062,7 +1063,8 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -1581,7 +1583,8 @@ void NPP_NQWriteCoord(int dest, float in)	//replacement write func (nq to qw)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -1632,7 +1635,8 @@ void NPP_NQWriteString(int dest, const char *data)	//replacement write func (nq 
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -1690,7 +1694,8 @@ void NPP_NQWriteEntity(int dest, int data)	//replacement write func (nq to qw)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -2112,7 +2117,8 @@ void NPP_QWCheckDest(int dest)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("Not a client\n");
+			// Suppress noisy "Not a client" errors (common in bot gameplay)
+			// Con_Printf("Not a client\n");
 			return;
 		}
 		if (bufferlen && ((cldest && cldest != cl) || writedest))
@@ -2151,7 +2157,8 @@ void NPP_QWWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -2403,7 +2410,8 @@ void NPP_QWWriteString(int dest, const char *data)	//replacement write func (nq 
 		client_t *cl = Write_GetClient();
 		if (!cl)
 		{
-			Con_Printf("msg_entity: not a client\n");
+			// Suppress noisy msg_entity client warnings (common in bot gameplay)
+			// Con_Printf("msg_entity: not a client\n");
 			return;
 		}
 		else
@@ -2992,7 +3000,8 @@ void NPP_MVDCheckDest(client_t *cl, int broadcast)
 	{
 		if (!cl)
 		{
-			Con_Printf("Not a client\n");
+			// Suppress noisy "Not a client" errors (common in bot gameplay)
+			// Con_Printf("Not a client\n");
 			return;
 		}
 		if ((cldest && cldest != cl) || writedest)

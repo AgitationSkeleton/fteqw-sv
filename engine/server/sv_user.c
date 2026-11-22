@@ -4355,6 +4355,8 @@ void SV_Say (qboolean team)
 
 	if (!(host_client->penalties & BAN_MUTE))
 		Sys_Printf ("%s", text);
+	if (host_client->protocol != SCP_BAD && !(host_client->penalties & BAN_MUTE))
+		NB_DiscordPost(text);	//nextbot build: optional Discord webhook
 
 #ifdef MVD_RECORDING
 	mvdrecording = sv.mvdrecording;

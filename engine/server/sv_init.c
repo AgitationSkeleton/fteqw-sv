@@ -1826,6 +1826,8 @@ MSV_OpenUserDatabase();
 
 	SSV_UpdateAddresses();
 
+	NB_MapLoaded();	//nextbot: nav mesh, mapcycle, game detection
+
 	//some mods stuffcmd these, and it would be a shame if they didn't work. we still need the earlier call in case the mod does extra stuff.
 	SV_SetMoveVars();
 

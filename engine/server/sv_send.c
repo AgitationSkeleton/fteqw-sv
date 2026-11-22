@@ -205,6 +205,7 @@ void SV_StuffcmdToClient(client_t *cl, const char *string)
 	switch (cl->protocol)
 	{
 	case SCP_BAD:	//bot
+		NB_StuffCmd(cl, string);	//nextbot bots apply userinfo commands (color/skin/team/setinfo) like a client would
 		break;
 	case SCP_QUAKE2:
 	case SCP_QUAKE2EX:
