@@ -120,10 +120,16 @@ static qboolean NB_AStar(int s, int g, int team, nbcostfn_t cost, void *ctx, flo
 			nblink_t *link = &nb_mesh.links[ca->firstlink + l];
 			nbarea_t *na = &nb_mesh.areas[link->to];
 			float step, ng;
+			/* standing in a teleporter that works for us: the only way on is through it */
+			if (nb_mesh.areatele && link->type != NBLINK_TELEPORT && cur != (unsigned int)s
+				&& (nb_mesh.areatele[cur] & (0x10 | (teambit ? teambit : 0xf))))
+				continue;
 			if (na->closedid == searchid)
 				continue;
 			if (teambit && (na->teamblock & teambit) && link->to != (unsigned int)g)
 				continue;
+			if (teambit && nb_mesh.linkteams && (nb_mesh.linkteams[ca->firstlink + l] & teambit))
+				continue;   /* a teleporter this team can't use */
 			step = cost ? cost(ctx, ca, na, link) : NB_DefaultCost(ca, na, link);
 			if (step < 0)
 				continue;

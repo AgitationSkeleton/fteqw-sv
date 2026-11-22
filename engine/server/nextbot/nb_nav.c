@@ -15,7 +15,7 @@
 nbmesh_t nb_mesh;
 
 #define QNAV_MAGIC   (('V'<<24)|('A'<<16)|('N'<<8)|'Q')
-#define QNAV_VERSION 4
+#define QNAV_VERSION 6
 
 static const vec3_t nb_hullmins = { -16, -16, -24 };
 static const vec3_t nb_hullmaxs = { 16, 16, 32 };
@@ -34,7 +34,7 @@ static int NB_Contents(const vec3_t p)
 }
 
 /* entities made non-solid during generation */
-static const char *nb_passable[] = { "func_door", "func_door_secret", "func_plat", "func_train", "func_button", "door", "func_door_rotating", NULL };
+static const char *nb_passable[] = { "func_door", "func_door_secret", "func_plat", "plat", "func_train", "train", "func_button", "door", "func_door_rotating", NULL };
 
 static qboolean NB_IsPassableBrush(edict_t *ed)
 {
@@ -421,6 +421,50 @@ static qboolean NB_RectOverlap(const nbarea_t *a, const vec3_t mins, const vec3_
 		&& a->maxs[2] + 64 > mins[2] && a->mins[2] - 8 < maxs[2];
 }
 
+/* a lift (func_plat, elevator door): link the floor under it to the floor beside its top */
+static void NB_LiftLink(edict_t *ed, float topz)
+{
+	vec3_t c, top;
+	int j, bottom, upper = -1;
+	float bestd = 1e9;
+	VectorAdd(ed->v->absmin, ed->v->absmax, c);
+	VectorScale(c, 0.5f, c);
+	/* the floor a rider stands on at the bottom: under the lift's (lowered) top surface; the lift
+	   brush itself may reach below the room's floor */
+	c[2] = ed->v->absmax[2] + 24;
+	bottom = NBNav_AreaAt(c, 1024);
+	if (bottom < 0)
+		bottom = NBNav_NearestArea(c, 128);
+	VectorSet(top, c[0], c[1], topz + 1);
+	for (j = 0; j < (int)nb_mesh.numareas; j++)
+	{
+		nbarea_t *a = &nb_mesh.areas[j];
+		float d;
+		vec3_t cl;
+		if (fabs(a->center[2] - topz) > 26)
+			continue;
+		cl[0] = bound(a->mins[0], top[0], a->maxs[0]);
+		cl[1] = bound(a->mins[1], top[1], a->maxs[1]);
+		d = (cl[0] - top[0]) * (cl[0] - top[0]) + (cl[1] - top[1]) * (cl[1] - top[1]);
+		if (d < bestd)
+		{
+			bestd = d;
+			upper = j;
+		}
+	}
+	for (j = 0; j < (int)nb_mesh.numareas; j++)
+		if (NB_RectOverlap(&nb_mesh.areas[j], ed->v->absmin, ed->v->absmax, 0) && nb_mesh.areas[j].maxs[2] < topz - 30)
+			nb_mesh.areas[j].flags |= NBAREA_PLAT;
+	if (qw_bot_debug.ival)
+		Con_Printf("nav: lift %s at %.0f %.0f: bottom area %d (from z %.0f), top z %.0f area %d (%.0f away)\n", NB_Classname(ed),
+			c[0], c[1], bottom, c[2], topz, upper, sqrt(bestd));
+	if (bottom >= 0 && upper >= 0 && bottom != upper && bestd < 96 * 96)
+	{
+		NB_AddRaw(bottom, upper, NBLINK_PLAT);
+		NB_AddRaw(upper, bottom, NBLINK_DROP);
+	}
+}
+
 static void NB_SpecialLinks(void)
 {
 	int i, j;
@@ -456,54 +500,71 @@ static void NB_SpecialLinks(void)
 				if (NB_RectOverlap(&nb_mesh.areas[j], ed->v->absmin, ed->v->absmax, 0))
 					NB_AddRaw(j, dest, NBLINK_TELEPORT);
 		}
-		else if (!strcmp(cn, "func_plat"))
+		else if (!strcmp(cn, "func_plat") || !strcmp(cn, "plat"))
 		{
 			/* a lift: link the shaft bottom to the floor at the top of the lift */
-			vec3_t c, top;
-			int bottom, upper = -1;
-			float bestd = 1e9, topz;
-			VectorAdd(ed->v->absmin, ed->v->absmax, c);
-			VectorScale(c, 0.5f, c);
-			topz = ed->v->absmax[2];
-			if (NB_HasField("pos1") && NB_HasField("pos2"))
+			float topz = ed->v->absmax[2];
+			if (NB_HasField("pos1"))
 			{
-				vec3_t p1, p2;
+				vec3_t p1;
 				NB_GetVector(ed, "pos1", p1);
-				NB_GetVector(ed, "pos2", p2);
 				topz = ed->v->absmax[2] + (p1[2] - ed->v->origin[2]);
 			}
-			bottom = NBNav_AreaAt(c, 1024);
-			VectorSet(top, c[0], c[1], topz + 1);
-			for (j = 0; j < (int)nb_mesh.numareas; j++)
-			{
-				nbarea_t *a = &nb_mesh.areas[j];
-				float d;
-				vec3_t cl;
-				if (fabs(a->center[2] - topz) > 26)
-					continue;
-				cl[0] = bound(a->mins[0], top[0], a->maxs[0]);
-				cl[1] = bound(a->mins[1], top[1], a->maxs[1]);
-				d = (cl[0] - top[0]) * (cl[0] - top[0]) + (cl[1] - top[1]) * (cl[1] - top[1]);
-				if (d < bestd)
-				{
-					bestd = d;
-					upper = j;
-				}
-			}
-			for (j = 0; j < (int)nb_mesh.numareas; j++)
-				if (NB_RectOverlap(&nb_mesh.areas[j], ed->v->absmin, ed->v->absmax, 0) && nb_mesh.areas[j].maxs[2] < topz - 30)
-					nb_mesh.areas[j].flags |= NBAREA_PLAT;
-			if (bottom >= 0 && upper >= 0 && bestd < 96 * 96)
-			{
-				NB_AddRaw(bottom, upper, NBLINK_PLAT);
-				NB_AddRaw(upper, bottom, NBLINK_DROP);
-			}
+			NB_LiftLink(ed, topz);
 		}
 		else if (!strncmp(cn, "func_door", 9) || !strcmp(cn, "door"))
 		{
+			vec3_t p1, p2;
 			for (j = 0; j < (int)nb_mesh.numareas; j++)
 				if (NB_RectOverlap(&nb_mesh.areas[j], ed->v->absmin, ed->v->absmax, 8))
 					nb_mesh.areas[j].flags |= NBAREA_DOOR;
+			/* a door that moves up a long way and is wide enough to stand on is an elevator */
+			if (NB_HasField("pos1") && NB_HasField("pos2"))
+			{
+				NB_GetVector(ed, "pos1", p1);
+				NB_GetVector(ed, "pos2", p2);
+				if (p2[2] - p1[2] > 48 && fabs(p2[0] - p1[0]) < 8 && fabs(p2[1] - p1[1]) < 8
+					&& ed->v->absmax[0] - ed->v->absmin[0] >= 48 && ed->v->absmax[1] - ed->v->absmin[1] >= 48)
+					NB_LiftLink(ed, ed->v->absmax[2] + (p2[2] - p1[2]));
+			}
+		}
+		else if (!strcmp(cn, "trigger_push"))
+		{
+			/* jump pad: simulate the launch (velocity = speed * 10 * movedir, gravity) to the landing
+			   area, and link the pad's areas to it like a teleporter */
+			vec3_t pos, vel, prev;
+			float speed = NB_GetFloat(ed, "speed") > 0 ? NB_GetFloat(ed, "speed") : 1000;
+			int step, land = -1;
+			VectorAdd(ed->v->absmin, ed->v->absmax, pos);
+			VectorScale(pos, 0.5f, pos);
+			pos[2] = ed->v->absmin[2] + 24;
+			VectorScale(ed->v->movedir, speed * 10, vel);
+			if (VectorLength(vel) < 100)
+				continue;
+			for (step = 0; step < 300; step++)
+			{
+				trace_t tr;
+				VectorCopy(pos, prev);
+				VectorMA(pos, 0.02f, vel, pos);
+				vel[2] -= movevars.gravity * 0.02f;
+				tr = NB_HullTrace(prev, pos);
+				if (tr.fraction < 1)
+				{
+					VectorCopy(tr.endpos, pos);
+					if (tr.plane.normal[2] > 0.7f && vel[2] < 0)
+					{
+						land = NBNav_AreaAt(pos, 64);
+						break;
+					}
+					/* hit a wall: slide */
+					vel[0] = vel[1] = 0;
+				}
+			}
+			if (land < 0)
+				continue;
+			for (j = 0; j < (int)nb_mesh.numareas; j++)
+				if (j != land && NB_RectOverlap(&nb_mesh.areas[j], ed->v->absmin, ed->v->absmax, 0))
+					NB_AddRaw(j, land, NBLINK_TELEPORT);
 		}
 		else if (!strcmp(cn, "trigger_hurt"))
 		{
@@ -807,6 +868,8 @@ void NBNav_Free(void)
 	if (nb_mesh.links) Z_Free(nb_mesh.links);
 	if (nb_mesh.gridstart) Z_Free(nb_mesh.gridstart);
 	if (nb_mesh.gridareas) Z_Free(nb_mesh.gridareas);
+	if (nb_mesh.linkteams) Z_Free(nb_mesh.linkteams);
+	if (nb_mesh.areatele) Z_Free(nb_mesh.areatele);
 	memset(&nb_mesh, 0, sizeof(nb_mesh));
 }
 
@@ -903,4 +966,37 @@ int NBNav_NearestArea(const vec3_t pos, float maxdist)
 	return best;
 }
 
+#endif
+
+#ifndef CLIENTONLY
+/* walking into a teleporter's volume teleports you: remember which areas do that, for whom */
+void NBNav_MarkTeleporters(void)
+{
+	int i;
+	unsigned int j;
+	if (nb_mesh.areatele)
+		Z_Free(nb_mesh.areatele);
+	nb_mesh.areatele = NULL;
+	if (!nb_mesh.numareas)
+		return;
+	nb_mesh.areatele = Z_Malloc(nb_mesh.numareas);
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		int team, bits;
+		if (ED_ISFREE(e) || strcmp(NB_Classname(e), "trigger_teleport"))
+			continue;
+		team = (int)NB_GetFloat(e, "team_no");
+		bits = (team >= 1 && team <= 4) ? (1 << (team - 1)) : 0x1f;
+		for (j = 0; j < nb_mesh.numareas; j++)
+		{
+			nbarea_t *a = &nb_mesh.areas[j];
+			/* the area's middle must be inside the trigger (edges brushing it don't teleport) */
+			if (a->center[0] >= e->v->absmin[0] && a->center[0] <= e->v->absmax[0]
+				&& a->center[1] >= e->v->absmin[1] && a->center[1] <= e->v->absmax[1]
+				&& a->center[2] + 40 >= e->v->absmin[2] && a->center[2] - 8 <= e->v->absmax[2])
+				nb_mesh.areatele[j] |= bits;
+		}
+	}
+}
 #endif

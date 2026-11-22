@@ -108,6 +108,8 @@ typedef struct nbmesh_s
 	unsigned int *gridstart;    /* gridw*gridh+1 offsets into gridareas */
 	unsigned int *gridareas;
 	unsigned int searchid;
+	unsigned char *areatele;    /* runtime: per area, teams a trigger_teleport there teleports (bit team-1; 0x10 = everyone) */
+	unsigned char *linkteams;   /* runtime: per link, teams that may NOT use it (team-only teleporters); NULL = none */
 } nbmesh_t;
 
 extern nbmesh_t nb_mesh;
@@ -121,6 +123,7 @@ int NBNav_NearestArea(const vec3_t pos, float maxdist);   /* closest area, or -1
 float NBNav_FloorZ(const nbarea_t *a, float x, float y);
 void NBNav_RandomPoint(const nbarea_t *a, vec3_t out);
 qboolean NBNav_Contains(const nbarea_t *a, const vec3_t pos, float ztol);
+void NBNav_MarkTeleporters(void);
 
 /* ------------------------------------------------------------------------------------------------
  * paths

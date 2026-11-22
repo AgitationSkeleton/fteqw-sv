@@ -117,8 +117,9 @@ float NB_GetFloat(edict_t *ed, const char *field)
 
 qboolean NB_HasField(const char *field)
 {
-	return NB_Field(sv.world.edicts ? (edict_t*)sv.world.edicts : EDICT_NUM_PB(svprogfuncs, 0), field, ev_float) != NULL
-		|| NB_Field(EDICT_NUM_PB(svprogfuncs, 0), field, ev_vector) != NULL;
+	edict_t *w = EDICT_NUM_PB(svprogfuncs, 0);
+	return NB_Field(w, field, ev_float) != NULL || NB_Field(w, field, ev_vector) != NULL
+		|| NB_Field(w, field, ev_entity) != NULL || NB_Field(w, field, ev_string) != NULL;
 }
 
 void NB_GetVector(edict_t *ed, const char *field, vec3_t out)
@@ -389,6 +390,9 @@ static nbbot_t *NB_SpawnBot(int team, int pclass, const char *name)
 	SV_SpawnParmsToQC(cl);
 	cl->spawned = true;
 	sv.spawned_client_slots++;
+	/* FortressOne's ClientConnect drops clients without CSQC; bots have nothing to run it with,
+	   but claim it so they can play (harmless for other game code) */
+	cl->csqcactive = (nb_game == NBGAME_TF);
 	sv.skipbprintclient = cl;
 	NB_CallQC(cl, pr_global_ptrs->ClientConnect ? *pr_global_ptrs->ClientConnect : 0);
 	sv.skipbprintclient = NULL;
@@ -717,7 +721,10 @@ void NB_Frame(void)
  */
 static qboolean NB_IsFortress(void)
 {
+	/* Team Fortress game code (any gamedir name): it has TF's player fields */
 	const char *g = FS_GetGamedir(true);
+	if (NB_HasField("playerclass") && NB_HasField("team_no"))
+		return true;
 	return !Q_strncasecmp(g, "fortress", 8) || !Q_strncasecmp(g, "customtf", 8);
 }
 
@@ -749,6 +756,7 @@ void NB_MapLoaded(void)
 	}
 	else if (qw_bot_verbose.ival)
 		Con_Printf("nav: loaded %s (%u areas)\n", svs.name, nb_mesh.numareas);
+	NBNav_MarkTeleporters();
 	if (nb_game == NBGAME_TF)
 		NBTF_MapStart();
 }
@@ -959,6 +967,9 @@ static void NB_NavGenerate_f(void)
 {
 	if (NBNav_Generate())
 		NBNav_Save();
+	NBNav_MarkTeleporters();
+	if (nb_game == NBGAME_TF)
+		NBTF_MapStart();   /* team blocks live on the areas: redo them for the new mesh */
 }
 
 void NB_Init(void)
@@ -1121,6 +1132,10 @@ void NB_InitDebugCommands(void)
 		extern void NB_InitDebugCommands3(void);
 		NB_InitDebugCommands2();
 		NB_InitDebugCommands3();
+		{
+			extern void NB_InitDebugCommands4(void);
+			NB_InitDebugCommands4();
+		}
 	}
 }
 #endif
@@ -1223,5 +1238,87 @@ static void NB_PathPts_f(void)
 void NB_InitDebugCommands3(void)
 {
 	Cmd_AddCommandD("qw_bot_pathpts", NB_PathPts_f, "qw_bot_pathpts x1 y1 z1 x2 y2 z2");
+}
+#endif
+
+#ifndef CLIENTONLY
+/* qw_bot_navcheck: reachability report for the current map (batch validation) */
+static void NB_NavCheck_f(void)
+{
+	unsigned int *queue, l;
+	unsigned char *seen;
+	int head = 0, tail = 0, i, n = 0, items = 0, itemsok = 0, goals = 0, goalsok = 0, spawns = 0;
+	char missing[512];
+	missing[0] = 0;
+	if (!nb_mesh.numareas)
+	{
+		Con_Printf("navcheck %s: NO MESH\n", svs.name);
+		return;
+	}
+	queue = Z_Malloc(sizeof(*queue) * nb_mesh.numareas);
+	seen = Z_Malloc(nb_mesh.numareas);
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		int a;
+		if (ED_ISFREE(e) || strncmp(NB_Classname(e), "info_player", 11))
+			continue;
+		a = NBNav_AreaAt(e->v->origin, 128);
+		if (a < 0)
+			a = NBNav_NearestArea(e->v->origin, 128);
+		if (a >= 0 && !seen[a])
+		{
+			seen[a] = 1;
+			queue[tail++] = a;
+			spawns++;
+		}
+	}
+	while (head < tail)
+	{
+		nbarea_t *ar = &nb_mesh.areas[queue[head++]];
+		n++;
+		for (l = 0; l < ar->numlinks; l++)
+		{
+			unsigned int to = nb_mesh.links[ar->firstlink + l].to;
+			if (!seen[to])
+			{
+				seen[to] = 1;
+				queue[tail++] = to;
+			}
+		}
+	}
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		const char *cn;
+		vec3_t c;
+		int a, isgoal;
+		if (ED_ISFREE(e))
+			continue;
+		cn = NB_Classname(e);
+		isgoal = !strcmp(cn, "item_tfgoal") || ((!strcmp(cn, "info_tfgoal") || !strcmp(cn, "i_t_g")) && ((int)NB_GetFloat(e, "goal_activation") & 1));
+		if (!isgoal && strncmp(cn, "item_", 5) && strncmp(cn, "weapon_", 7))
+			continue;
+		if (isgoal) goals++; else items++;
+		VectorAdd(e->v->absmin, e->v->absmax, c);
+		VectorScale(c, 0.5f, c);
+		a = NBNav_AreaAt(c, 160);
+		if (a < 0)
+			a = NBNav_NearestArea(c, 96);
+		if (a >= 0 && seen[a])
+		{
+			if (isgoal) goalsok++; else itemsok++;
+		}
+		else if (strlen(missing) < sizeof(missing) - 64)
+			Q_strncatz(missing, va(" %s@%.0f,%.0f,%.0f", cn, c[0], c[1], c[2]), sizeof(missing));
+	}
+	Con_Printf("navcheck %s: areas %u reach %d%% (from %d spawn areas) items %d/%d goals %d/%d%s%s\n", svs.name, nb_mesh.numareas,
+		(int)(100.0f * n / nb_mesh.numareas), spawns, itemsok, items, goalsok, goals, missing[0] ? " missing:" : "", missing);
+	Z_Free(queue);
+	Z_Free(seen);
+}
+void NB_InitDebugCommands4(void)
+{
+	Cmd_AddCommandD("qw_bot_navcheck", NB_NavCheck_f, "Reachability report for the current map's nav mesh");
 }
 #endif

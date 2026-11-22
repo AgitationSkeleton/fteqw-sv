@@ -51,10 +51,11 @@ typedef struct
 	int buildsentry, builddispenser;  /* direct build impulses (FO), 0 = use the menu */
 	int spymenu;
 	int feign;
+	int disguiseenemy;  /* one impulse: disguise as the enemy team (FO), 0 = use the spy menu */
 } tfimpulses_t;
 
-static const tfimpulses_t tf28_imp = { 140, 101, 110, 150, 151, 152, 166, 170, 176, 179, 0, 0, 177, 178 };
-static const tfimpulses_t fo_imp   = { 102, 112, 121, 14, 15, 16, 52, 55, 176, 0, 89, 90, 0, 61 };
+static const tfimpulses_t tf28_imp = { 140, 101, 110, 150, 151, 152, 166, 170, 176, 179, 0, 0, 177, 178, 0 };
+static const tfimpulses_t fo_imp   = { 102, 112, 121, 14, 15, 16, 53, 55, 176, 0, 89, 90, 0, 61, 66 };
 static const tfimpulses_t *tfi = &tf28_imp;
 
 #define PC_SCOUT    1
@@ -286,6 +287,32 @@ static void TF_TeamBlocks(void)
 				a->teamblock |= block;
 		}
 	}
+	/* team-only teleporters (Hunted): the other teams can't use their links */
+	if (nb_mesh.linkteams)
+		Z_Free(nb_mesh.linkteams);
+	nb_mesh.linkteams = Z_Malloc(nb_mesh.numlinks + 1);
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		int team, block;
+		if (ED_ISFREE(e) || strcmp(NB_Classname(e), "trigger_teleport"))
+			continue;
+		team = (int)NB_GetFloat(e, "team_no");
+		if (team < 1 || team > 4)
+			continue;
+		block = 0xf & ~(1 << (team - 1));
+		for (j = 0; j < nb_mesh.numareas; j++)
+		{
+			nbarea_t *a = &nb_mesh.areas[j];
+			unsigned int l;
+			if (!(a->maxs[0] > e->v->absmin[0] && a->mins[0] < e->v->absmax[0] && a->maxs[1] > e->v->absmin[1] && a->mins[1] < e->v->absmax[1]
+				&& a->center[2] + 64 > e->v->absmin[2] && a->center[2] - 8 < e->v->absmax[2]))
+				continue;
+			for (l = 0; l < a->numlinks; l++)
+				if (nb_mesh.links[a->firstlink + l].type == NBLINK_TELEPORT)
+					nb_mesh.linkteams[a->firstlink + l] |= block;
+		}
+	}
 	/* hazards a team must not walk into (border1's "kill" triggers, Hunted's President-only hazard) */
 	for (i = 0; i < tf_numgoals; i++)
 	{
@@ -312,7 +339,7 @@ int NBTF_TeamBlockBits(edict_t *door)
 
 void NBTF_MapStart(void)
 {
-	tf_profile = NB_HasField("has_flag") ? TFP_FO : TFP_TF28;
+	tf_profile = (NB_HasField("csqc_maxspeed") || NB_HasField("has_flag")) ? TFP_FO : TFP_TF28;
 	tfi = tf_profile == TFP_FO ? &fo_imp : &tf28_imp;
 	tf_nextcensus = 0;
 	TF_Census();
@@ -699,14 +726,30 @@ static const tfweapon_t tf_weapons[] = {
 	{ PC_CIVILIAN, 1, 0, 0, 64, 10 },
 };
 
+/* FortressOne: weapons are slots (1 primary, 2 secondary, 3 sidearm, 4 melee) */
+static const tfweapon_t fo_weapons[] = {
+	{ PC_SCOUT, 1, 1000, 0, 900, 60 },      { PC_SCOUT, 2, 0, 0, 1500, 40 },
+	{ PC_SNIPER, 1, 0, 400, 4000, 80 },     { PC_SNIPER, 2, 0, 0, 900, 60 },
+	{ PC_SOLDIER, 1, 900, 120, 1600, 100 }, { PC_SOLDIER, 2, 0, 0, 450, 60 },
+	{ PC_DEMOMAN, 1, 600, 150, 750, 90 },   { PC_DEMOMAN, 3, 0, 0, 1500, 30 },
+	{ PC_MEDIC, 1, 1000, 0, 1000, 80 },     { PC_MEDIC, 2, 0, 0, 450, 60 },
+	{ PC_HVYWEAP, 1, 0, 0, 900, 100 },      { PC_HVYWEAP, 2, 0, 0, 450, 60 },
+	{ PC_PYRO, 1, 600, 0, 320, 90 },        { PC_PYRO, 2, 600, 150, 900, 80 },
+	{ PC_SPY, 2, 0, 0, 450, 70 },           { PC_SPY, 1, 1500, 0, 1500, 50 },
+	{ PC_ENGINEER, 2, 0, 0, 450, 70 },      { PC_ENGINEER, 1, 1500, 0, 1500, 60 },
+	{ PC_CIVILIAN, 4, 0, 0, 64, 10 },
+};
+
 static const tfweapon_t *TF_ChooseWeapon(int pclass, float dist)
 {
 	unsigned int i;
+	const tfweapon_t *table = tf_profile == TFP_FO ? fo_weapons : tf_weapons;
+	unsigned int count = tf_profile == TFP_FO ? countof(fo_weapons) : countof(tf_weapons);
 	const tfweapon_t *best = NULL;
 	float bests = -1;
-	for (i = 0; i < countof(tf_weapons); i++)
+	for (i = 0; i < count; i++)
 	{
-		const tfweapon_t *w = &tf_weapons[i];
+		const tfweapon_t *w = &table[i];
 		float s;
 		if (w->pclass != pclass)
 			continue;
@@ -794,7 +837,8 @@ static nbresult_t Fight_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	if (now - bot->enemyseen > 1.5f)
 		return NB_Done("lost sight");
 	dist = Distance(me->v->origin, e->v->origin);
-	if (!f->weapon || now >= f->nextweapon)
+	/* never swap a spinning assault cannon (FortressOne asserts on it) */
+	if (!f->weapon || (now >= f->nextweapon && !(pclass == PC_HVYWEAP && (bot->cl->lastcmd.buttons & 1))))
 	{
 		const tfweapon_t *w = TF_ChooseWeapon(pclass, dist);
 		if (w && w != f->weapon)
@@ -1290,13 +1334,19 @@ static void TF_SpyDisguise(nbbot_t *bot)
 	edict_t *me = NB_Self(bot);
 	float now = NB_Time();
 	int team = NB_TeamOf(me), enemy;
-	if (TF_Class(me) != PC_SPY || NB_GetFloat(me, "is_undercover") > 0 || tf_profile != TFP_TF28)
+	if (TF_Class(me) != PC_SPY || NB_GetFloat(me, "is_undercover") > 0)
 	{
 		t->disguisestep = 0;
 		return;
 	}
 	if (now < t->disguisestep_t)
 		return;
+	if (tfi->disguiseenemy)
+	{	/* FortressOne: one impulse; is_undercover doesn't exist there, so just repeat now and then */
+		TF_Impulse(bot, tfi->disguiseenemy);
+		t->disguisestep_t = now + 30;
+		return;
+	}
 	for (enemy = 1; enemy <= tf_numteams; enemy++)
 		if (!NBTF_Allied(enemy, team))
 			break;
@@ -1388,7 +1438,7 @@ static nbresult_t Root_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	/* bodyguards stay near their VIP */
 	{
 		edict_t *vip = TF_AlliedVIP(bot);
-		if (vip && Distance(vip->v->origin, me->v->origin) > 350)
+		if (vip && (Distance(vip->v->origin, me->v->origin) > 250 || frandom() < 0.5f))
 		{
 			tfgoto_t *g2 = (tfgoto_t*)TF_NewGoto(GOTO_FOLLOW, vip, NULL, "escort");
 			return NB_SuspendFor(&g2->base, "escort the VIP");
