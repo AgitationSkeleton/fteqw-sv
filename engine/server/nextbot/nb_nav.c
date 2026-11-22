@@ -15,7 +15,7 @@
 nbmesh_t nb_mesh;
 
 #define QNAV_MAGIC   (('V'<<24)|('A'<<16)|('N'<<8)|'Q')
-#define QNAV_VERSION 3
+#define QNAV_VERSION 4
 
 static const vec3_t nb_hullmins = { -16, -16, -24 };
 static const vec3_t nb_hullmaxs = { 16, 16, 32 };
@@ -189,20 +189,27 @@ static int NB_Expand(int n, int d, unsigned char *ltype)
 	tx = ix * NB_GEN_STEP;
 	ty = iy * NB_GEN_STEP;
 
-	for (tries = 0; tries < 2; tries++)
+	/* lifts tried: a step up (18), none (a low doorway at the top of a ramp or stairs leaves no
+	   room to lift the hull), then a jump (44) */
+	static const float lifts[3] = { NB_STEPSIZE, 0, NB_JUMPHEIGHT };
+	for (tries = 0; tries < 3; tries++)
 	{
-		float lift = tries == 0 ? NB_STEPSIZE : NB_JUMPHEIGHT;
+		float lift = lifts[tries];
+		qboolean jump = tries == 2;
 		VectorSet(up, o[0], o[1], o[2] + lift);
-		tr = NB_HullTrace(o, up);
-		if (tr.startsolid)
-			return -1;
-		VectorCopy(tr.endpos, up);
-		if (tries == 1 && up[2] < o[2] + NB_STEPSIZE + 4)
-			return -1;   /* no headroom to jump */
+		if (lift > 0)
+		{
+			tr = NB_HullTrace(o, up);
+			if (tr.startsolid)
+				return -1;
+			VectorCopy(tr.endpos, up);
+			if (jump && up[2] < o[2] + NB_STEPSIZE + 4)
+				return -1;   /* no headroom to jump */
+		}
 		VectorSet(side, tx, ty, up[2]);
 		tr = NB_HullTrace(up, side);
-		if (tr.fraction < 1)
-			continue;    /* wall: try a jump */
+		if (tr.fraction < 1 || tr.startsolid)
+			continue;    /* blocked at this height: try the next */
 		if (!NB_StandAt(tx, ty, up[2], lift + NB_MAXDROP, dest, &flags, &steep))
 			return -1;   /* no floor (void / sky) */
 		if (steep)
@@ -211,7 +218,7 @@ static int NB_Expand(int n, int d, unsigned char *ltype)
 			return -1;
 		if (dest[2] > o[2] + NB_STEPSIZE + 0.5f)
 		{
-			if (tries == 0)
+			if (!jump)
 				continue;    /* higher than a step: it's a jump */
 			*ltype = NBLINK_JUMP;
 		}
@@ -219,8 +226,6 @@ static int NB_Expand(int n, int d, unsigned char *ltype)
 			*ltype = NBLINK_DROP;
 		else
 			*ltype = NBLINK_WALK;
-		if (tries == 1 && dest[2] <= o[2] + NB_STEPSIZE + 0.5f)
-			*ltype = (dest[2] < o[2] - NB_STEPSIZE - 0.5f) ? NBLINK_DROP : NBLINK_WALK;
 		return NB_AddNode(ix, iy, dest[2], flags);
 	}
 	return -1;

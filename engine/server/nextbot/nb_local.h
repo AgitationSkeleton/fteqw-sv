@@ -125,7 +125,7 @@ qboolean NBNav_Contains(const nbarea_t *a, const vec3_t pos, float ztol);
 /* ------------------------------------------------------------------------------------------------
  * paths
  */
-#define NB_MAX_PATH 256
+#define NB_MAX_PATH 1024
 
 typedef struct nbpathseg_s
 {

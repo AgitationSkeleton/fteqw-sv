@@ -501,7 +501,13 @@ static nbresult_t Roam_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	if (NB_Time() > r->until || Distance(me->v->origin, r->where) < 64)
 		return NB_Done("arrived");
 	if (bot->enemy && NB_Time() - bot->enemyseen < 0.2f && NBIntention_ShouldAttack(bot, bot->enemy))
+	{
+		if (nb_game == NBGAME_TF)
+			return NB_Done("enemy: let TF decide");
 		return NB_SuspendFor(NBAction_New(&NBDM_AttackVT), "enemy while roaming");
+	}
+	if (nb_game == NBGAME_TF && NB_Time() - self->started > 8)
+		return NB_Done("TF: look for objectives again");
 	if (NB_Time() - self->started > 2 && nb_game == NBGAME_DM && ((int)(NB_Time() * 2) % 4) == 0 && NBDM_PickItem(bot, 1500, NULL))
 		return NB_Done("an item is worth fetching");
 	if (!NBLoco_PathTo(bot, r->where, 3))

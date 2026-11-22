@@ -638,6 +638,12 @@ static void NB_Think(nbbot_t *bot, float dt)
 		if (!bot->hasaim)
 			NBBody_LookAlongPath(bot);
 	}
+	else if (nb_game == NBGAME_TF && (NB_TeamOf(ed) <= 0 || NB_GetFloat(ed, "playerclass") <= 0))
+	{
+		/* TF: not on a team / no class yet (an observer): the intention runs the join */
+		bot->hasmovegoal = false;
+		NBIntention_Update(bot, dt);
+	}
 	else
 	{
 		/* respawn: press attack/jump a moment after death (QW needs a fresh press) */
@@ -987,7 +993,9 @@ void NB_Init(void)
 	Cmd_AddCommandD("qw_bot_nav_generate", NB_NavGenerate_f, "Generate and save the nav mesh for the current map");
 	{
 		extern void NB_InitDebugCommands(void);
+		extern void NBTF_InitCommands(void);
 		NB_InitDebugCommands();
+		NBTF_InitCommands();
 	}
 }
 
@@ -1108,5 +1116,112 @@ static void NB_NavInfo_f(void)
 void NB_InitDebugCommands(void)
 {
 	Cmd_AddCommandD("qw_bot_navinfo", NB_NavInfo_f, "qw_bot_navinfo <slot>: nav area under a bot");
+	{
+		extern void NB_InitDebugCommands2(void);
+		extern void NB_InitDebugCommands3(void);
+		NB_InitDebugCommands2();
+		NB_InitDebugCommands3();
+	}
+}
+#endif
+
+#ifndef CLIENTONLY
+/* qw_bot_navreach <x> <y> <z>: how much of the mesh is reachable from that point (debugging) */
+static void NB_NavReach_f(void)
+{
+	vec3_t p;
+	int start, n = 0, head = 0, tail = 0;
+	unsigned int *queue, i, l;
+	unsigned char *seen;
+	float zmin = 1e9, zmax = -1e9;
+	p[0] = atof(Cmd_Argv(1)); p[1] = atof(Cmd_Argv(2)); p[2] = atof(Cmd_Argv(3));
+	start = NBNav_AreaAt(p, 200);
+	if (start < 0)
+		start = NBNav_NearestArea(p, 400);
+	if (start < 0)
+	{
+		Con_Printf("no area near that point\n");
+		return;
+	}
+	queue = Z_Malloc(sizeof(*queue) * nb_mesh.numareas);
+	seen = Z_Malloc(nb_mesh.numareas);
+	queue[tail++] = start;
+	seen[start] = 1;
+	while (head < tail)
+	{
+		nbarea_t *a = &nb_mesh.areas[queue[head++]];
+		n++;
+		zmin = min(zmin, a->center[2]);
+		zmax = max(zmax, a->center[2]);
+		for (l = 0; l < a->numlinks; l++)
+		{
+			unsigned int to = nb_mesh.links[a->firstlink + l].to;
+			if (!seen[to])
+			{
+				seen[to] = 1;
+				queue[tail++] = to;
+			}
+		}
+	}
+	Con_Printf("from area %d: %d of %u areas reachable, z %.0f..%.0f\n", start, n, nb_mesh.numareas, zmin, zmax);
+	/* the reachable area closest to an unreachable one: where the mesh breaks */
+	{
+		float best = 1e9;
+		unsigned int ba = 0, bu = 0;
+		for (i = 0; i < nb_mesh.numareas && n < (int)nb_mesh.numareas; i++)
+		{
+			unsigned int j;
+			if (!seen[i])
+				continue;
+			for (j = 0; j < nb_mesh.numareas; j += 1)
+			{
+				float d;
+				if (seen[j])
+					continue;
+				d = Distance(nb_mesh.areas[i].center, nb_mesh.areas[j].center);
+				if (d < best)
+				{
+					best = d;
+					ba = i;
+					bu = j;
+				}
+			}
+			if (n > 2000)
+				break;   /* big component: don't spend forever */
+		}
+		if (best < 1e9)
+			Con_Printf("closest gap: area %u (%.0f %.0f %.0f) -> unreachable area %u (%.0f %.0f %.0f), %.0f apart\n", ba,
+				nb_mesh.areas[ba].center[0], nb_mesh.areas[ba].center[1], nb_mesh.areas[ba].center[2], bu,
+				nb_mesh.areas[bu].center[0], nb_mesh.areas[bu].center[1], nb_mesh.areas[bu].center[2], best);
+	}
+	Z_Free(queue);
+	Z_Free(seen);
+}
+
+void NB_InitDebugCommands2(void)
+{
+	Cmd_AddCommandD("qw_bot_navreach", NB_NavReach_f, "qw_bot_navreach <x> <y> <z>: reachable mesh from a point");
+}
+#endif
+
+#ifndef CLIENTONLY
+/* qw_bot_pathpts x1 y1 z1 x2 y2 z2: print a path's segments (debugging) */
+static void NB_PathPts_f(void)
+{
+	vec3_t a, b;
+	nbpath_t *p = Z_Malloc(sizeof(*p));
+	int i;
+	a[0] = atof(Cmd_Argv(1)); a[1] = atof(Cmd_Argv(2)); a[2] = atof(Cmd_Argv(3));
+	b[0] = atof(Cmd_Argv(4)); b[1] = atof(Cmd_Argv(5)); b[2] = atof(Cmd_Argv(6));
+	if (!NBPath_Compute(p, a, b, 0, NULL, NULL))
+		Con_Printf("no path\n");
+	else
+		for (i = 0; i < p->numsegs; i++)
+			Con_Printf("%3d area %5d how %d  %.0f %.0f %.0f\n", i, p->seg[i].area, p->seg[i].how, p->seg[i].pos[0], p->seg[i].pos[1], p->seg[i].pos[2]);
+	Z_Free(p);
+}
+void NB_InitDebugCommands3(void)
+{
+	Cmd_AddCommandD("qw_bot_pathpts", NB_PathPts_f, "qw_bot_pathpts x1 y1 z1 x2 y2 z2");
 }
 #endif
