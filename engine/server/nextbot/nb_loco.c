@@ -127,15 +127,27 @@ static qboolean NB_WalkableDirect(edict_t *self, const vec3_t floorpt)
 	tr = World_Move(&sv.world, self->v->origin, (float*)nb_hmins, (float*)nb_hmaxs, end, MOVE_NOMONSTERS, (wedict_t*)self);
 	if (tr.fraction < 1)
 		return false;
-	{	/* and floor all the way: sample the midpoint for a hole */
-		vec3_t mid, down;
-		VectorAdd(self->v->origin, end, mid);
-		VectorScale(mid, 0.5f, mid);
-		VectorCopy(mid, down);
-		down[2] -= 24 + NB_STEPSIZE + 8;
-		tr = World_Move(&sv.world, mid, (float*)nb_hmins, (float*)nb_hmaxs, down, MOVE_NOMONSTERS, (wedict_t*)self);
-		if (tr.fraction >= 1)
-			return false;
+	{	/* floor all the way, and no lava or slime: sample every 24 units */
+		vec3_t d;
+		float len, t;
+		VectorSubtract(end, self->v->origin, d);
+		len = VectorLength(d);
+		for (t = 24; t < len; t += 24)
+		{
+			vec3_t p, down, feet;
+			int c;
+			VectorMA(self->v->origin, t / len, d, p);
+			VectorCopy(p, down);
+			down[2] -= 24 + NB_STEPSIZE + 8;
+			tr = World_Move(&sv.world, p, (float*)nb_hmins, (float*)nb_hmaxs, down, MOVE_NOMONSTERS, (wedict_t*)self);
+			if (tr.fraction >= 1)
+				return false;
+			VectorCopy(tr.endpos, feet);
+			feet[2] -= 20;
+			c = World_PointContentsWorldOnly(&sv.world, feet);
+			if (c & (FTECONTENTS_LAVA | FTECONTENTS_SLIME))
+				return false;
+		}
 	}
 	return true;
 }
@@ -246,8 +258,9 @@ void NBLoco_UpdateStuck(nbbot_t *bot)
 {
 	edict_t *self = NB_Self(bot);
 	float now = NB_Time();
-	if (!bot->hasmovegoal || !NB_IsAlive(self))
-	{
+	if (!bot->hasmovegoal || !NB_IsAlive(self)
+		|| (fabs(bot->movegoal[0] - self->v->origin[0]) < 40 && fabs(bot->movegoal[1] - self->v->origin[1]) < 40))
+	{	/* no goal, or holding position on purpose: not stuck */
 		bot->stucktime = 0;
 		VectorCopy(self->v->origin, bot->stuckpos);
 		bot->laststuckcheck = now;

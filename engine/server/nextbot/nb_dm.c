@@ -303,6 +303,16 @@ typedef struct { nbaction_t base; float nextitemcheck; } nbdmroot_t;
 
 static const nbactionvt_t NBDM_AttackVT, NBDM_ChaseVT, NBDM_GetItemVT, NBDM_RoamVT, NBDM_RootVT;
 
+/* is an action of this kind already suspended below 'self'? (then resume it instead of stacking another) */
+static qboolean NB_Below(nbaction_t *self, const nbactionvt_t *vt)
+{
+	nbaction_t *a;
+	for (a = self->below; a; a = a->below)
+		if (a->vt == vt)
+			return true;
+	return false;
+}
+
 /* --- Attack ------------------------------------------------------------------------------------ */
 static nbresult_t Attack_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *prior)
 {
@@ -331,6 +341,21 @@ void NB_CombatMove(nbbot_t *bot, float dist, float wantmin, float wantmax, int *
 		VectorMA(goal, 96, to, goal);
 	else if (dist < wantmin)
 		VectorMA(goal, -96, to, goal);
+	/* don't strafe into a wall */
+	{
+		static const vec3_t hmins = { -16, -16, -24 }, hmaxs = { 16, 16, 32 };
+		trace_t tr = World_Move(&sv.world, self->v->origin, (float*)hmins, (float*)hmaxs, goal, MOVE_NOMONSTERS, (wedict_t*)self);
+		if (tr.fraction < 0.5f)
+		{
+			*strafedir = -*strafedir;
+			*nextstrafe = now + 0.4f + frandom() * 0.8f;
+			VectorMA(self->v->origin, 96 * *strafedir, side, goal);
+			if (dist > wantmax)
+				VectorMA(goal, 96, to, goal);
+			else if (dist < wantmin)
+				VectorMA(goal, -96, to, goal);
+		}
+	}
 	/* don't strafe off a ledge (into lava, a pit): stay on floor at about the same height */
 	{
 		vec3_t mid;
@@ -387,7 +412,7 @@ static nbresult_t Attack_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	{
 		float v;
 		edict_t *item = NBDM_PickItem(bot, 1200, &v);
-		if (item && !strncmp(NB_Classname(item), "item_health", 11))
+		if (item && !strncmp(NB_Classname(item), "item_health", 11) && !NB_Below(self, &NBDM_GetItemVT))
 		{
 			nbgetitem_t *g = (nbgetitem_t*)NBAction_New(&NBDM_GetItemVT);
 			g->item = item;
@@ -443,7 +468,15 @@ static nbresult_t GetItem_Update(nbbot_t *bot, nbaction_t *self, float dt)
 		return NB_Done("took too long");
 	}
 	if (bot->enemy && NB_Time() - bot->enemyseen < 0.2f && NBIntention_ShouldAttack(bot, bot->enemy))
-		return NB_SuspendFor(NBAction_New(&NBDM_AttackVT), "enemy while fetching");
+	{
+		if (NB_Below(self, &NBDM_AttackVT))
+		{
+			if (Distance(NB_Self(bot)->v->origin, g->pos) > 300)
+				return NB_Done("back to the fight");
+		}
+		else
+			return NB_SuspendFor(NBAction_New(&NBDM_AttackVT), "enemy while fetching");
+	}
 	if (!NBLoco_PathTo(bot, g->pos, 2))
 	{
 		NB_MarkBadGoal(bot, g->item, 30);
