@@ -1410,6 +1410,14 @@ static void SVC_GetInfo (const char *challenge, int fullstatus)
 	*resp++ = '\n';
 
 	SV_GeneratePublicServerinfo(resp, response+sizeof(response));
+	//dpmaster only lists a server whose reply echoes its challenge
+	if (challenge && *challenge)
+		Info_SetValueForKey(resp, "challenge", challenge, response+sizeof(response) - resp);
+	//the info string was written at resp but resp wasn't moved past it, so only the header went out.
+	//step past the string's null: the status listing below replaces that null with '\n'
+	resp += strlen(resp) + 1;
+	if (!fullstatus)
+		resp--;	//infoResponse ends with the info string itself
 
 	if (fullstatus)
 	{
