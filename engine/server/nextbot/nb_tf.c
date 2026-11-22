@@ -96,6 +96,11 @@ static int tf_numgoals;
 static int tf_numteams;
 static int tf_civilianteams;      /* bit (team-1) */
 static int tf_allies[5];          /* bit (team-1) of allied teams, per team */
+
+/* escape vehicles (border1's truck): a door that travels far and holds a team trigger targeting it */
+typedef struct { edict_t *door, *trigger; int team; vec3_t pos1, pos2; } tfvehicle_t;
+static tfvehicle_t tf_vehicles[4];
+static int tf_numvehicles;
 static float tf_nextcensus;
 
 static vec3_t *NB_EdCenter(edict_t *e, vec3_t out)
@@ -217,6 +222,50 @@ static void TF_Census(void)
 				memcpy(tf_goals[tf_numgoals - 1].score, sc, sizeof(sc));
 				tf_goals[tf_numgoals - 1].hurts = hurts && !(sc[1] > 0 || sc[2] > 0 || sc[3] > 0 || sc[4] > 0);
 			}
+		}
+	}
+	tf_numvehicles = 0;
+	for (i = 1; i < sv.world.num_edicts && tf_numvehicles < (int)countof(tf_vehicles); i++)
+	{
+		edict_t *d = EDICT_NUM_PB(svprogfuncs, i), *tr;
+		const char *tn;
+		vec3_t p1, p2;
+		int k;
+		if (ED_ISFREE(d) || (strncmp(NB_Classname(d), "func_door", 9) && strcmp(NB_Classname(d), "door")))
+			continue;
+		tn = PR_GetString(svprogfuncs, d->v->targetname);
+		if (!*tn)
+			continue;
+		NB_GetVector(d, "pos1", p1);
+		NB_GetVector(d, "pos2", p2);
+		if (Distance(p1, p2) < 512)
+			continue;
+		for (k = 1; k < sv.world.num_edicts; k++)
+		{
+			vec3_t c;
+			tr = EDICT_NUM_PB(svprogfuncs, k);
+			if (ED_ISFREE(tr) || strcmp(NB_Classname(tr), "trigger_multiple") || strcmp(PR_GetString(svprogfuncs, tr->v->target), tn))
+				continue;
+			if (NB_GetFloat(tr, "team_no") < 1)
+				continue;
+			VectorAdd(tr->v->absmin, tr->v->absmax, c);
+			VectorScale(c, 0.5f, c);
+			/* the trigger sits inside the vehicle's start position (compare against where the door
+			   is when it's at pos1, wherever it is now) */
+			{
+				vec3_t ofs;
+				VectorSubtract(d->v->origin, p1, ofs);
+				if (c[0] < d->v->absmin[0] - ofs[0] - 16 || c[0] > d->v->absmax[0] - ofs[0] + 16
+					|| c[1] < d->v->absmin[1] - ofs[1] - 16 || c[1] > d->v->absmax[1] - ofs[1] + 16)
+					continue;
+			}
+			tf_vehicles[tf_numvehicles].door = d;
+			tf_vehicles[tf_numvehicles].trigger = tr;
+			tf_vehicles[tf_numvehicles].team = (int)NB_GetFloat(tr, "team_no");
+			VectorCopy(p1, tf_vehicles[tf_numvehicles].pos1);
+			VectorCopy(p2, tf_vehicles[tf_numvehicles].pos2);
+			tf_numvehicles++;
+			break;
 		}
 	}
 	/* items without owned_by (4f4): a team owns the item its capture points don't take */
@@ -461,9 +510,6 @@ static int TF_PickTeam(nbbot_t *bot)
 		Q_snprintfz(g, sizeof(g), "team%dmaxplayers", t);
 		maxp = (int)NB_Global(g);
 		if (maxp > 0 && n >= maxp)
-			continue;
-		/* a civilian team (VIP) takes only one bot */
-		if ((tf_civilianteams & (1 << (t - 1))) && n >= 1)
 			continue;
 		if (n < bestn || (n == bestn && (rand() & 1)))
 		{
@@ -1362,6 +1408,106 @@ static void TF_SpyDisguise(nbbot_t *bot)
 	t->disguisestep_t = now + 0.4f;
 }
 
+/* --- RideVehicle (border1's truck) ------------------------------------------------------------- */
+typedef struct { nbaction_t base; int vehicle; float nextjump; float until; } tfride_t;
+
+static qboolean TF_InVehicle(edict_t *me, edict_t *door)
+{
+	return me->v->origin[0] > door->v->absmin[0] + 4 && me->v->origin[0] < door->v->absmax[0] - 4
+		&& me->v->origin[1] > door->v->absmin[1] + 4 && me->v->origin[1] < door->v->absmax[1] - 4
+		&& me->v->origin[2] - 24 >= door->v->absmin[2] + 8 && me->v->origin[2] - 24 <= door->v->absmax[2] + 4;
+}
+
+static nbresult_t Ride_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *prior)
+{
+	((tfride_t*)self)->until = NB_Time() + 90;
+	return NB_Continue();
+}
+
+static nbresult_t Ride_Update(nbbot_t *bot, nbaction_t *self, float dt)
+{
+	tfride_t *r = (tfride_t*)self;
+	tfvehicle_t *v;
+	edict_t *me = NB_Self(bot), *door;
+	vec3_t trig, doorofs;
+	qboolean atstart, inside;
+	float now = NB_Time();
+	if (r->vehicle >= tf_numvehicles || now > r->until)
+		return NB_Done("no vehicle");
+	v = &tf_vehicles[r->vehicle];
+	door = v->door;
+	VectorSubtract(door->v->origin, v->pos1, doorofs);
+	atstart = VectorLength(doorofs) < 8;
+	inside = TF_InVehicle(me, door);
+	NB_EdCenter(v->trigger, trig);   /* static: only inside the vehicle while it's at its start */
+
+	if (inside)
+	{
+		/* in the vehicle: stand on the start trigger until it goes, then hold still; shoot from it */
+		if (atstart)
+			NBLoco_SetGoal(bot, trig);
+		else
+			bot->hasmovegoal = false;
+		bot->path.valid = false;
+		if (bot->enemy && now - bot->enemyseen < 0.3f && NBTF_IsEnemy(bot, bot->enemy))
+		{
+			const tfweapon_t *w = TF_ChooseWeapon(TF_Class(me), Distance(me->v->origin, bot->enemy->v->origin));
+			vec3_t aim;
+			if (w)
+			{
+				NB_LeadTarget(bot, bot->enemy, w->speed, aim);
+				NBBody_AimAt(bot, aim);
+				if (NBBody_IsAimedAt(bot, aim, 10))
+					bot->buttons |= 1;
+			}
+		}
+		return NB_Continue();
+	}
+	if (!atstart)
+	{
+		/* it left without us: wait near where it starts */
+		vec3_t home;
+		VectorAdd(door->v->absmin, door->v->absmax, home);
+		VectorScale(home, 0.5f, home);
+		VectorSubtract(home, doorofs, home);
+		home[0] -= (door->v->absmax[0] - door->v->absmin[0]) * 0.5f + 48;
+		if (TF_WantsFight(bot))
+			return NB_SuspendFor(NBAction_New(&TF_FightVT), "enemy while waiting for the vehicle");
+		if (Distance(me->v->origin, home) > 96)
+			NBLoco_PathTo(bot, home, 2);
+		else
+			bot->hasmovegoal = false;
+		return NB_Continue();
+	}
+	/* get in: walk up to it on the mesh, then climb in directly with jumps */
+	{
+		float dx = max(door->v->absmin[0] - me->v->origin[0], me->v->origin[0] - door->v->absmax[0]);
+		float dy = max(door->v->absmin[1] - me->v->origin[1], me->v->origin[1] - door->v->absmax[1]);
+		float edge = max(dx, dy);
+		if (edge > 80)
+		{
+			if (TF_WantsFight(bot))
+				return NB_SuspendFor(NBAction_New(&TF_FightVT), "enemy on the way to the vehicle");
+			if (!NBLoco_PathTo(bot, trig, 2))
+			{
+				NBLoco_SetGoal(bot, trig);
+				bot->path.valid = false;
+			}
+			return NB_Continue();
+		}
+		NBLoco_SetGoal(bot, trig);
+		bot->path.valid = false;
+		if (((int)me->v->flags & FL_ONGROUND) && now >= r->nextjump)
+		{
+			bot->wantjump = true;
+			r->nextjump = now + 0.6f;
+		}
+	}
+	return NB_Continue();
+}
+static nbresult_t Ride_OnStuck(nbbot_t *bot, nbaction_t *self) { bot->wantjump = true; return NB_Sustain("hop"); }
+static const nbactionvt_t TF_RideVT = { "RideVehicle", sizeof(tfride_t), Ride_OnStart, Ride_Update, NULL, NULL, NULL, Ride_OnStuck };
+
 /* --- Root -------------------------------------------------------------------------------------- */
 static nbresult_t Root_Update(nbbot_t *bot, nbaction_t *self, float dt)
 {
@@ -1380,6 +1526,18 @@ static nbresult_t Root_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	item = TF_CarriedItem(bot);
 	if (item && (g = TF_CaptureFor(bot, item)))
 		return NB_SuspendFor(TF_NewGoto(GOTO_CAPTURE, g->ed, NULL, "capture"), "carrying an item");
+
+	/* an escape vehicle for this team (border1): get in it */
+	{
+		int vi;
+		for (vi = 0; vi < tf_numvehicles; vi++)
+			if (tf_vehicles[vi].team == team)
+			{
+				tfride_t *r = (tfride_t*)NBAction_New(&TF_RideVT);
+				r->vehicle = vi;
+				return NB_SuspendFor(&r->base, "escape vehicle");
+			}
+	}
 
 	/* the VIP: head for the escape, but not miles ahead of the escort */
 	if (pclass == PC_CIVILIAN)

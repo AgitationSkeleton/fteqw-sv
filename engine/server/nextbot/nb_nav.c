@@ -15,7 +15,7 @@
 nbmesh_t nb_mesh;
 
 #define QNAV_MAGIC   (('V'<<24)|('A'<<16)|('N'<<8)|'Q')
-#define QNAV_VERSION 6
+#define QNAV_VERSION 7
 
 static const vec3_t nb_hullmins = { -16, -16, -24 };
 static const vec3_t nb_hullmaxs = { 16, 16, 32 };
@@ -545,21 +545,51 @@ static void NB_SpecialLinks(void)
 			{
 				trace_t tr;
 				VectorCopy(pos, prev);
+				/* the push sets the velocity every frame the player is inside the trigger (push
+				   columns carry you up a tube); outside it, gravity */
+				{
+					/* whichever pad the player is in now (a column can hand over to another pad) */
+					int k;
+					qboolean pushed = false;
+					for (k = 1; k < sv.world.num_edicts && !pushed; k++)
+					{
+						edict_t *pe = EDICT_NUM_PB(svprogfuncs, k);
+						if (ED_ISFREE(pe) || strcmp(NB_Classname(pe), "trigger_push"))
+							continue;
+						if (pos[0] + 16 > pe->v->absmin[0] && pos[0] - 16 < pe->v->absmax[0]
+							&& pos[1] + 16 > pe->v->absmin[1] && pos[1] - 16 < pe->v->absmax[1]
+							&& pos[2] + 32 > pe->v->absmin[2] && pos[2] - 24 < pe->v->absmax[2])
+						{
+							float ps = NB_GetFloat(pe, "speed") > 0 ? NB_GetFloat(pe, "speed") : 1000;
+							VectorScale(pe->v->movedir, ps * 10, vel);
+							pushed = true;
+						}
+					}
+					if (!pushed)
+						vel[2] -= movevars.gravity * 0.02f;
+				}
 				VectorMA(pos, 0.02f, vel, pos);
-				vel[2] -= movevars.gravity * 0.02f;
 				tr = NB_HullTrace(prev, pos);
 				if (tr.fraction < 1)
 				{
 					VectorCopy(tr.endpos, pos);
-					if (tr.plane.normal[2] > 0.7f && vel[2] < 0)
+					if (tr.plane.normal[2] > 0.7f && vel[2] <= 0)
 					{
 						land = NBNav_AreaAt(pos, 64);
+						if (land < 0)
+							land = NBNav_NearestArea(pos, 48);
 						break;
 					}
-					/* hit a wall: slide */
-					vel[0] = vel[1] = 0;
+					if (tr.plane.normal[2] < -0.7f)
+						vel[2] = 0;          /* ceiling */
+					else
+						vel[0] = vel[1] = 0; /* wall: drop straight down */
 				}
 			}
+			if (qw_bot_debug.ival)
+				Con_Printf("nav: jump pad at %.0f %.0f %.0f (speed %.0f, dir %.2f %.2f %.2f) lands in area %d at %.0f %.0f %.0f\n",
+					(ed->v->absmin[0] + ed->v->absmax[0]) * 0.5f, (ed->v->absmin[1] + ed->v->absmax[1]) * 0.5f, ed->v->absmin[2],
+					speed, ed->v->movedir[0], ed->v->movedir[1], ed->v->movedir[2], land, pos[0], pos[1], pos[2]);
 			if (land < 0)
 				continue;
 			for (j = 0; j < (int)nb_mesh.numareas; j++)
