@@ -976,6 +976,7 @@ COMMON_OBJS = \
 	nb_bot.o	\
 	nb_dm.o	\
 	nb_tf.o	\
+	nb_heatmap.o	\
 	sv_move.o 		\
 	pmove.o		\
 	pmovetst.o		\

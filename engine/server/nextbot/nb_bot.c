@@ -687,8 +687,10 @@ void NB_Frame(void)
 {
 	int i;
 	float dt;
+	extern void NBHeat_Frame(void);
 	if (sv.state != ss_active || !svprogfuncs)
 		return;
+	NBHeat_Frame();
 	dt = sv.time - nb_lastframe;
 	if (dt <= 0)
 		return;
@@ -731,6 +733,8 @@ static qboolean NB_IsFortress(void)
 void NB_PreMapChange(void)
 {
 	int i;
+	extern void NBHeat_MapChange(void);
+	NBHeat_MapChange();
 	for (i = 0; i < NB_MAX_BOTS; i++)
 		if (nb_bots[i].inuse)
 			NB_RemoveBot(&nb_bots[i], false);
@@ -998,6 +1002,10 @@ void NB_Init(void)
 	Cvar_Register(&qw_bot_debug, grp);
 	Cvar_Register(&qw_bot_nav_autogen, grp);
 	Cvar_Register(&qw_bot_mapcycle, grp);
+	{
+		extern void NBHeat_Init(void);
+		NBHeat_Init();
+	}
 	Cmd_AddCommandD("qw_bot_add", NB_Add_f, "qw_bot_add [count] [team] [class] [difficulty] [name] (TF) / qw_bot_add [count] [difficulty] [name]");
 	Cmd_AddCommandD("qw_bot_kick", NB_Kick_f, "qw_bot_kick <name|team|all|N>");
 	Cmd_AddCommandD("qw_bot_status", NB_Status_f, "List the bots and what they are doing");
