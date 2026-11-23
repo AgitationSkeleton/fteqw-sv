@@ -228,7 +228,37 @@ qboolean NBPath_Compute(nbpath_t *path, const vec3_t start, const vec3_t goal, i
 		nbarea_t *to = &nb_mesh.areas[chain[i]];
 		nbarea_t *from = &nb_mesh.areas[nb_mesh.areas[chain[i]].parent];
 		nblink_t *link = &nb_mesh.links[from->firstlink + to->parentlink];
-		nbpathseg_t *seg = &path->seg[path->numsegs++];
+		nbpathseg_t *seg;
+		if (link->type == NBLINK_RUNJUMP && path->numsegs < NB_MAX_PATH - 2)
+		{	/* both areas are single cells (the takeoff and landing spots) */
+			vec3_t u, takeoff;
+			takeoff[0] = from->center[0];
+			takeoff[1] = from->center[1];
+			takeoff[2] = NBNav_FloorZ(from, takeoff[0], takeoff[1]);
+			VectorSet(u, to->center[0] - takeoff[0], to->center[1] - takeoff[1], 0);
+			VectorNormalize(u);
+			/* the points walked to near the takeoff (it is at an edge) are replaced by the run-up:
+			   heading for them first can carry a running bot over the edge */
+			while (path->numsegs > 0 && path->seg[path->numsegs - 1].how == NBLINK_WALK && path->seg[path->numsegs - 1].area >= 0
+				&& (path->seg[path->numsegs - 1].pos[0] - takeoff[0]) * (path->seg[path->numsegs - 1].pos[0] - takeoff[0])
+				 + (path->seg[path->numsegs - 1].pos[1] - takeoff[1]) * (path->seg[path->numsegs - 1].pos[1] - takeoff[1]) < (NB_RUNUP + 16) * (NB_RUNUP + 16))
+				path->numsegs--;
+			/* the run-up point, then straight through the takeoff spot at the landing spot: that
+			   segment jumps where the floor ends */
+			seg = &path->seg[path->numsegs++];
+			seg->area = -1;
+			seg->how = NBLINK_WALK;
+			VectorSet(seg->pos, takeoff[0] - u[0] * NB_RUNUP, takeoff[1] - u[1] * NB_RUNUP, takeoff[2]);
+			seg = &path->seg[path->numsegs++];
+			seg->area = chain[i];
+			seg->how = NBLINK_RUNJUMP;
+			seg->pos[0] = to->center[0];
+			seg->pos[1] = to->center[1];
+			seg->pos[2] = NBNav_FloorZ(to, seg->pos[0], seg->pos[1]);
+			VectorCopy(seg->pos, prev);
+			continue;
+		}
+		seg = &path->seg[path->numsegs++];
 		seg->area = chain[i];
 		seg->how = link->type;
 		if (link->type == NBLINK_TELEPORT)

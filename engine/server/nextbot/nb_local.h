@@ -42,6 +42,11 @@ static inline float NB_Distance(const vec3_t a, const vec3_t b)
 #define NB_JUMPHEIGHT          44      /* QW jump (270 up, 800 gravity) lifts ~45 units */
 #define NB_MAXDROP             320     /* longest drop the nav mesh links (fall damage above ~ 500 in TF) */
 #define NB_GEN_STEP            16      /* nav generation grid */
+#define NB_RUNSPEED            320     /* sv_maxspeed */
+#define NB_JUMPSPEED           270     /* QW jump velocity */
+#define NB_RUNUP               64      /* run-up behind a running jump's takeoff spot */
+#define NB_RJ_STEP             20      /* msec: movement step while running at a running jump's edge */
+#define NB_AIRSPEED            30      /* QW air control: speed it can add across the line of flight */
 
 /* ------------------------------------------------------------------------------------------------
  * nav mesh
@@ -66,6 +71,8 @@ enum
 	NBLINK_TELEPORT,      /* trigger_teleport to its destination */
 	NBLINK_PLAT,          /* ride a lift */
 	NBLINK_SWIM,          /* water surface / water column */
+	NBLINK_RUNJUMP,       /* run at full speed and jump off an edge, across a gap (the 'from' and 'to'
+	                         areas are single grid cells: the takeoff and landing spots) */
 };
 
 typedef struct nblink_s
@@ -133,7 +140,7 @@ void NBNav_MarkTeleporters(void);
 typedef struct nbpathseg_s
 {
 	vec3_t pos;           /* point to walk to */
-	int area;
+	int area;             /* -1: a waypoint that must be walked to, never skipped (running jump run-up) */
 	unsigned char how;    /* NBLINK_* used to enter this segment */
 } nbpathseg_t;
 
@@ -242,6 +249,8 @@ struct nbbot_s
 	vec3_t movegoal;          /* where locomotion is heading this frame */
 	qboolean hasmovegoal;
 	qboolean wantjump, wantrun;
+	qboolean wantslow;        /* this frame: walk, to turn sharply (lining up a running jump) */
+	qboolean runjumping;      /* this frame: running at a running jump's edge (move in short steps) */
 	float stucktime, laststuckcheck;
 	vec3_t stuckpos;
 	float jumptime;
@@ -301,6 +310,8 @@ float NB_Time(void);
 void NBLoco_SetGoal(nbbot_t *bot, const vec3_t pos);
 void NBLoco_ClearGoal(nbbot_t *bot);
 qboolean NBLoco_FollowPath(nbbot_t *bot);     /* steer along bot->path; false when done/failed */
+qboolean NBLoco_AtJumpEdge(nbbot_t *bot);     /* running at a running jump's edge: jump now */
+void NB_AirSteer(const vec3_t pos, const vec3_t vel, const vec3_t target, vec3_t wish); /* wish direction steering a jump at target */
 qboolean NBLoco_PathTo(nbbot_t *bot, const vec3_t goal, float repathinterval);
 void NBBody_AimAt(nbbot_t *bot, const vec3_t pos);
 void NBBody_LookAlongPath(nbbot_t *bot);

@@ -570,11 +570,33 @@ static void NB_RunBotCmd(nbbot_t *bot, float dt)
 	sv_player->v->v_angle[2] = SHORT2ANGLE(cmd.angles[2]);
 	host_client->isindependant = true;
 	host_client->localtime = sv.time;
-	SV_PreRunCmd();
-	if (host_client->msecs < cmd.msec)
-		host_client->msecs = cmd.msec;   /* bots send no packets: fund the speed-cheat budget */
-	SV_RunCmd(&cmd, false);
-	SV_PostRunCmd();
+	if (bot->runjumping && !(cmd.buttons & 2) && cmd.msec > NB_RJ_STEP)
+	{	/* running at a running jump's edge: move in short steps (as a player's client does) and
+		   jump on the step where the floor ends */
+		int left = cmd.msec;
+		usercmd_t step = cmd;
+		while (left > 0)
+		{
+			step.msec = min(left, NB_RJ_STEP);
+			left -= step.msec;
+			if (!(step.buttons & 2) && NBLoco_AtJumpEdge(bot))
+				step.buttons |= 2;
+			SV_PreRunCmd();
+			if (host_client->msecs < step.msec)
+				host_client->msecs = step.msec;
+			SV_RunCmd(&step, false);
+			SV_PostRunCmd();
+		}
+	}
+	else
+	{
+		SV_PreRunCmd();
+		if (host_client->msecs < cmd.msec)
+			host_client->msecs = cmd.msec;   /* bots send no packets: fund the speed-cheat budget */
+		SV_RunCmd(&cmd, false);
+		SV_PostRunCmd();
+	}
+	bot->runjumping = false;
 	host_client->lastcmd = cmd;
 	host_client->msecs = 0;
 	host_client->lastruncmd = (unsigned int)(sv.time * 1000);
