@@ -152,6 +152,33 @@ static qboolean NB_WalkableDirect(edict_t *self, const vec3_t floorpt)
 	return true;
 }
 
+/* lifts (func_plat): a rider waiting in the shaft holds a raised plat up for ever (its trigger fills the
+   shaft), and one under a descending plat gets crushed. Only step on when it's down. */
+edict_t *NBLoco_LiftAt(const vec3_t pos)
+{
+	int i;
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *ed = EDICT_NUM_PB(svprogfuncs, i);
+		const char *cn;
+		if (ED_ISFREE(ed))
+			continue;
+		cn = PR_GetString(svprogfuncs, ed->v->classname);
+		if (strcmp(cn, "func_plat") && strcmp(cn, "plat"))
+			continue;
+		if (pos[0] >= ed->v->absmin[0] - 2 && pos[0] <= ed->v->absmax[0] + 2 && pos[1] >= ed->v->absmin[1] - 2 && pos[1] <= ed->v->absmax[1] + 2)
+			return ed;
+	}
+	return NULL;
+}
+
+qboolean NBLoco_LiftDown(edict_t *lift)
+{
+	vec3_t pos2;
+	NB_GetVector(lift, "pos2", pos2);
+	return fabs(lift->v->origin[2] - pos2[2]) < 2 && lift->v->velocity[2] == 0;
+}
+
 qboolean NBLoco_FollowPath(nbbot_t *bot)
 {
 	edict_t *self = NB_Self(bot);
@@ -209,6 +236,29 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 		if (!NB_WalkableDirect(self, n->pos))
 			break;
 		look++;
+	}
+	/* about to enter a lift's shaft: wait at the rim until the lift is down */
+	{
+		int here = NBNav_AreaAt(self->v->origin, 64), k;
+		if (here < 0 || !(nb_mesh.areas[here].flags & NBAREA_PLAT))
+			for (k = p->cur; k <= look; k++)
+				if (nb_mesh.areas[p->seg[k].area].flags & NBAREA_PLAT)
+				{
+					edict_t *lift = NBLoco_LiftAt(p->seg[k].pos);
+					if (lift && !NBLoco_LiftDown(lift))
+					{
+						vec3_t c;
+						VectorAdd(lift->v->absmin, lift->v->absmax, c);
+						VectorScale(c, 0.5f, c);
+						if (k == p->cur || (c[0] - self->v->origin[0]) * (c[0] - self->v->origin[0]) + (c[1] - self->v->origin[1]) * (c[1] - self->v->origin[1]) < 150 * 150)
+						{
+							bot->hasmovegoal = false;
+							return true;
+						}
+						look = k - 1;
+					}
+					break;
+				}
 	}
 	seg = &p->seg[look];
 	NBLoco_SetGoal(bot, seg->pos);

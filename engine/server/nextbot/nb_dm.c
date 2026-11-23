@@ -321,6 +321,13 @@ static nbresult_t Attack_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *pri
 	return NB_Continue();
 }
 
+/* off the mesh (a ledge, lava) or into a lift shaft */
+static qboolean NB_StrafeUnsafe(const vec3_t goal, const vec3_t mid)
+{
+	int a = NBNav_AreaAt(goal, 24);
+	return a < 0 || NBNav_AreaAt(mid, 24) < 0 || (nb_mesh.areas[a].flags & NBAREA_PLAT);
+}
+
 void NB_CombatMove(nbbot_t *bot, float dist, float wantmin, float wantmax, int *strafedir, float *nextstrafe)
 {
 	edict_t *self = NB_Self(bot);
@@ -361,13 +368,13 @@ void NB_CombatMove(nbbot_t *bot, float dist, float wantmin, float wantmax, int *
 		vec3_t mid;
 		VectorAdd(self->v->origin, goal, mid);
 		VectorScale(mid, 0.5f, mid);
-		if (NBNav_AreaAt(goal, 24) < 0 || NBNav_AreaAt(mid, 24) < 0)
+		if (NB_StrafeUnsafe(goal, mid))
 		{
 			*strafedir = -*strafedir;
 			VectorMA(self->v->origin, 96 * *strafedir, side, goal);
 			VectorAdd(self->v->origin, goal, mid);
 			VectorScale(mid, 0.5f, mid);
-			if (NBNav_AreaAt(goal, 24) < 0 || NBNav_AreaAt(mid, 24) < 0)
+			if (NB_StrafeUnsafe(goal, mid))
 				VectorCopy(self->v->origin, goal);   /* nowhere safe to strafe: hold */
 		}
 	}

@@ -1093,6 +1093,35 @@ static nbresult_t Goto_Update(nbbot_t *bot, nbaction_t *self, float dt)
 		return NB_Done("someone took it");
 	if (g->kind == GOTO_CAPTURE && !TF_CarriedItem(bot))
 		return NB_Done("captured / dropped");
+	/* a goal on top of a lift (hunted's escape pillar): get on the lift when it's down, then stand still
+	   in the middle of it while it carries us up */
+	{
+		edict_t *lift = NBLoco_LiftAt(g->pos);
+		if (lift && g->pos[2] > lift->v->absmax[2] + 32)
+		{
+			vec3_t c;
+			VectorAdd(lift->v->absmin, lift->v->absmax, c);
+			VectorScale(c, 0.5f, c);
+			if (NBLoco_LiftAt(me->v->origin) == lift && me->v->origin[2] >= lift->v->absmax[2] + 16
+				&& me->v->origin[2] <= lift->v->absmax[2] + 40)
+			{	/* riding */
+				c[2] = me->v->origin[2] - 24;
+				NBLoco_SetGoal(bot, c);
+				bot->path.valid = false;
+				if (g->until < NB_Time() + 15)
+					g->until = NB_Time() + 15;
+				return NB_Continue();
+			}
+			c[2] = lift->v->absmax[2] + 24;
+			if (!NBLoco_PathTo(bot, c, 2))
+			{
+				if (g->ent)
+					NB_MarkBadGoal(bot, g->ent, 20);
+				return NB_Done("no path to the lift");
+			}
+			return NB_Continue();
+		}
+	}
 	d = Distance(me->v->origin, g->pos);
 	/* long trips (2fort's flag runs) outlast a flat timeout: keep going while it's getting closer */
 	if (d < g->bestd - 128)
@@ -1168,7 +1197,7 @@ static nbresult_t Defend_Update(nbbot_t *bot, nbaction_t *self, float dt)
 			p[1] = point[1] + crandom() * 400;
 			p[2] = point[2];
 			a = NBNav_AreaAt(p, 200);
-			if (a >= 0)
+			if (a >= 0 && !(nb_mesh.areas[a].flags & NBAREA_PLAT))   /* never wait in a lift shaft */
 			{
 				NBNav_RandomPoint(&nb_mesh.areas[a], d->spot);
 				d->spot[2] += 24;

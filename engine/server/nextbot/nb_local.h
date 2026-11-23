@@ -302,6 +302,8 @@ float NB_Time(void);
 /* locomotion / body / vision */
 void NBLoco_SetGoal(nbbot_t *bot, const vec3_t pos);
 void NBLoco_ClearGoal(nbbot_t *bot);
+edict_t *NBLoco_LiftAt(const vec3_t pos);        /* func_plat whose footprint contains pos */
+qboolean NBLoco_LiftDown(edict_t *lift);          /* resting at the bottom (safe to step on) */
 qboolean NBLoco_FollowPath(nbbot_t *bot);     /* steer along bot->path; false when done/failed */
 qboolean NBLoco_PathTo(nbbot_t *bot, const vec3_t goal, float repathinterval);
 void NBBody_AimAt(nbbot_t *bot, const vec3_t pos);

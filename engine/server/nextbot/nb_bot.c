@@ -524,6 +524,7 @@ static void NB_CheckNoScore(nbbot_t *bot)
 	edict_t *ed = NB_Self(bot);
 	static float lastscore[NB_MAX_BOTS];
 	static int lastfrags[NB_MAX_BOTS];
+	static vec3_t lastpos[NB_MAX_BOTS];
 	int i = bot->clientnum;
 	if (qw_bot_stucktime.value <= 0 || sv.time < 60)
 		return;
@@ -532,10 +533,13 @@ static void NB_CheckNoScore(nbbot_t *bot)
 		lastscore[i] = 0;
 		return;
 	}
-	if (lastscore[i] <= 0 || ed->v->frags > lastfrags[i])
+	/* only for bots that are wedged: scoring, or getting around the map (a TF VIP running for the
+	   exit, whose suicide would hand the other team a win), resets the clock */
+	if (lastscore[i] <= 0 || ed->v->frags > lastfrags[i] || Distance(ed->v->origin, lastpos[i]) > 512)
 	{
 		lastscore[i] = sv.time;
 		lastfrags[i] = (int)ed->v->frags;
+		VectorCopy(ed->v->origin, lastpos[i]);
 		return;
 	}
 	if (sv.time - lastscore[i] >= qw_bot_stucktime.value)
