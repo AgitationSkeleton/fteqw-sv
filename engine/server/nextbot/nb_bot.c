@@ -115,6 +115,13 @@ float NB_GetFloat(edict_t *ed, const char *field)
 	return v ? v->_float : 0;
 }
 
+void NB_SetFloat(edict_t *ed, const char *field, float value)
+{
+	eval_t *v = NB_Field(ed, field, ev_float);
+	if (v)
+		v->_float = value;
+}
+
 qboolean NB_HasField(const char *field)
 {
 	edict_t *w = EDICT_NUM_PB(svprogfuncs, 0);
@@ -645,6 +652,24 @@ static void NB_Think(nbbot_t *bot, float dt)
 			bot->wantjump = true;
 		}
 		NBLoco_UpdateStuck(bot);
+		/* fallen somewhere with no way out (a sealed pit): respawn rather than swim about for ever */
+		{
+			int here = NBNav_AreaAt(ed->v->origin, ed->v->waterlevel >= 2 ? 600 : 96);
+			if (here >= 0 && (nb_mesh.areas[here].flags & NBAREA_TRAP))
+			{
+				if (!bot->trapsince)
+					bot->trapsince = sv.time;
+				else if (sv.time - bot->trapsince > 5)
+				{
+					bot->trapsince = 0;
+					if (qw_bot_debug.ival)
+						Con_Printf("[nb] %s is trapped at %.0f %.0f %.0f, respawning\n", bot->cl->name, ed->v->origin[0], ed->v->origin[1], ed->v->origin[2]);
+					NB_ClientCommand(bot, "kill");
+				}
+			}
+			else
+				bot->trapsince = 0;
+		}
 		if (!bot->hasaim)
 			NBBody_LookAlongPath(bot);
 	}

@@ -56,6 +56,7 @@ enum
 	NBAREA_HURT       = 1 << 5,    /* overlaps a trigger_hurt */
 	NBAREA_SPAWN      = 1 << 6,    /* contains a spawn point */
 	NBAREA_CROUCH     = 1 << 7,    /* unused in QW (no crouch); reserved */
+	NBAREA_TRAP       = 1 << 8,    /* no way back to any spawn (a pit you can't climb out of); set at load */
 };
 
 enum
@@ -278,6 +279,7 @@ struct nbbot_s
 	char cmdqueue[8][64];
 	int cmdhead, cmdtail;
 	float deathtime;
+	float trapsince;     /* standing in a trap area since (0 = not) */
 	float lastpain;
 	edict_t *lastattacker;
 
@@ -315,6 +317,7 @@ void NBVision_Update(nbbot_t *bot);
 
 /* field access by name (game code fields that are not in the engine's entvars) */
 float NB_GetFloat(edict_t *ed, const char *field);
+void NB_SetFloat(edict_t *ed, const char *field, float value);
 qboolean NB_HasField(const char *field);
 void NB_GetVector(edict_t *ed, const char *field, vec3_t out);
 edict_t *NB_GetEntity(edict_t *ed, const char *field);

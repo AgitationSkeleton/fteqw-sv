@@ -154,6 +154,11 @@ static qboolean NB_StandAt(float x, float y, float ztop, float maxdown, vec3_t o
 	VectorSet(a, x, y, ztop);
 	VectorSet(b, x, y, ztop - maxdown);
 	tr = NB_HullTrace(a, b);
+	if (!tr.startsolid && !tr.allsolid && tr.fraction >= 1 && (NB_Contents(b) & (FTECONTENTS_WATER | FTECONTENTS_SLIME)))
+	{	/* falling into deep water doesn't hurt: follow it down to the bottom (4f4's pits) */
+		VectorSet(b, x, y, ztop - maxdown - 1024);
+		tr = NB_HullTrace(a, b);
+	}
 	if (tr.startsolid || tr.allsolid || tr.fraction >= 1)
 		return false;
 	*steep = tr.plane.normal[2] < 0.7f;
@@ -188,6 +193,41 @@ static int NB_Expand(int n, int d, unsigned char *ltype)
 	VectorSet(o, gn[n].ix * NB_GEN_STEP, gn[n].iy * NB_GEN_STEP, gn[n].z);
 	tx = ix * NB_GEN_STEP;
 	ty = iy * NB_GEN_STEP;
+
+	/* under water (a pool, a flooded pit): swim up and climb out onto a neighbouring floor near the
+	   surface. Without this a deep pool is a dead end the bots can fall into but never leave. */
+	if (gn[n].flags & (NBAREA_WATER | NBAREA_SLIME))
+	{
+		vec3_t p, surf;
+		float z;
+		VectorCopy(o, p);
+		for (z = o[2]; z < o[2] + 1024; z += 8)
+		{
+			p[2] = z;
+			if (!(NB_Contents(p) & (FTECONTENTS_WATER | FTECONTENTS_SLIME)))
+				break;
+		}
+		if (z > o[2] + NB_STEPSIZE + 8 && z < o[2] + 1024)
+		{	/* deep: rise to the surface (origin a little under it), then over the edge */
+			VectorSet(surf, o[0], o[1], z - 8);
+			tr = NB_HullTrace(o, surf);
+			if (!tr.startsolid && tr.fraction >= 1)
+			{
+				VectorSet(up, o[0], o[1], z + NB_STEPSIZE);
+				tr = NB_HullTrace(surf, up);
+				VectorCopy(tr.endpos, up);
+				VectorSet(side, tx, ty, up[2]);
+				tr = NB_HullTrace(up, side);
+				if (!tr.startsolid && tr.fraction >= 1
+					&& NB_StandAt(tx, ty, up[2], NB_STEPSIZE + NB_MAXDROP, dest, &flags, &steep) && !steep
+					&& !(flags & NBAREA_LAVA) && dest[2] > o[2] + NB_STEPSIZE + 0.5f && dest[2] <= z + 48)
+				{
+					*ltype = NBLINK_SWIM;
+					return NB_AddNode(ix, iy, dest[2], flags);
+				}
+			}
+		}
+	}
 
 	/* lifts tried: a step up (18), none (a low doorway at the top of a ramp or stairs leaves no
 	   room to lift the hull), then a jump (44) */
@@ -1008,8 +1048,75 @@ int NBNav_NearestArea(const vec3_t pos, float maxdist)
 
 #ifndef CLIENTONLY
 /* walking into a teleporter's volume teleports you: remember which areas do that, for whom */
+/* areas from which no spawn point can be reached (4f4's flooded hall, sealed pits): flood backwards over
+   the links from every spawn area; what the flood never reaches is a trap */
+static void NBNav_MarkTraps(void)
+{
+	unsigned int na = nb_mesh.numareas, i, l, *start, *rev, *fill, *queue, head = 0, tail = 0, traps = 0;
+	unsigned char *ok;
+	if (!na)
+		return;
+	start = Z_Malloc(sizeof(*start) * (na + 1));
+	fill = Z_Malloc(sizeof(*fill) * na);
+	rev = Z_Malloc(sizeof(*rev) * (nb_mesh.numlinks + 1));
+	queue = Z_Malloc(sizeof(*queue) * na);
+	ok = Z_Malloc(na);
+	for (i = 0; i < na; i++)
+	{
+		nb_mesh.areas[i].flags &= ~NBAREA_TRAP;
+		for (l = 0; l < nb_mesh.areas[i].numlinks; l++)
+			start[nb_mesh.links[nb_mesh.areas[i].firstlink + l].to + 1]++;
+	}
+	for (i = 0; i < na; i++)
+		start[i + 1] += start[i];
+	for (i = 0; i < na; i++)
+		for (l = 0; l < nb_mesh.areas[i].numlinks; l++)
+		{
+			unsigned int to = nb_mesh.links[nb_mesh.areas[i].firstlink + l].to;
+			rev[start[to] + fill[to]++] = i;
+		}
+	for (i = 1; i < (unsigned int)sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		int a;
+		if (ED_ISFREE(e) || strncmp(PR_GetString(svprogfuncs, e->v->classname), "info_player", 11))
+			continue;
+		a = NBNav_AreaAt(e->v->origin, 128);
+		if (a < 0)
+			a = NBNav_NearestArea(e->v->origin, 128);
+		if (a >= 0 && !ok[a])
+		{
+			ok[a] = 1;
+			queue[tail++] = a;
+		}
+	}
+	if (tail)
+	{
+		while (head < tail)
+		{
+			unsigned int a = queue[head++];
+			for (l = start[a]; l < start[a + 1]; l++)
+				if (!ok[rev[l]])
+				{
+					ok[rev[l]] = 1;
+					queue[tail++] = rev[l];
+				}
+		}
+		for (i = 0; i < na; i++)
+			if (!ok[i])
+			{
+				nb_mesh.areas[i].flags |= NBAREA_TRAP;
+				traps++;
+			}
+	}
+	if (qw_bot_debug.ival && traps)
+		Con_Printf("nav: %u trap areas (no way back to a spawn)\n", traps);
+	Z_Free(start); Z_Free(fill); Z_Free(rev); Z_Free(queue); Z_Free(ok);
+}
+
 void NBNav_MarkTeleporters(void)
 {
+	NBNav_MarkTraps();
 	int i;
 	unsigned int j;
 	if (nb_mesh.areatele)

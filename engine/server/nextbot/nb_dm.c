@@ -325,7 +325,7 @@ static nbresult_t Attack_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *pri
 static qboolean NB_StrafeUnsafe(const vec3_t goal, const vec3_t mid)
 {
 	int a = NBNav_AreaAt(goal, 24);
-	return a < 0 || NBNav_AreaAt(mid, 24) < 0 || (nb_mesh.areas[a].flags & NBAREA_PLAT);
+	return a < 0 || NBNav_AreaAt(mid, 24) < 0 || (nb_mesh.areas[a].flags & (NBAREA_PLAT | NBAREA_TRAP));
 }
 
 void NB_CombatMove(nbbot_t *bot, float dist, float wantmin, float wantmax, int *strafedir, float *nextstrafe)

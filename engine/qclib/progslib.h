@@ -236,6 +236,7 @@ struct pubprogfuncs_s
 	pbool (PDECL *ParseEval)					(pubprogfuncs_t *progfuncs, union eval_s *eval, int type, const char *s);
 	void (PDECL *SetStringField)				(pubprogfuncs_t *progfuncs, struct edict_s *ed, string_t *fld, const char *str, pbool str_is_static);	//if ed is null, fld points to a global. if str_is_static, then s doesn't need its own memory allocated.
 	pbool (PDECL *DumpProfile)					(pubprogfuncs_t *progfuncs, pbool resetprofiles);
+	int (PDECL *SetFunctionStatement)			(pubprogfuncs_t *progfuncs, func_t func, int first_statement);	//swap a function's entry (negative = builtin); returns the old one, or 0 if func is invalid
 
 	unsigned int edicttable_length;
 	struct edict_s **edicttable;

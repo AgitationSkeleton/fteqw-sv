@@ -663,6 +663,21 @@ static struct entvars_s *PDECL PR_entvars (pubprogfuncs_t *ppf, struct edict_s *
 	return (struct entvars_s *)edvars(ed);
 }
 
+static int PDECL PR_SetFunctionStatement(pubprogfuncs_t *ppf, func_t func, int first_statement)
+{
+	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
+	unsigned int pnum = (func & 0xff000000)>>24;
+	unsigned int fnum = (func & 0x00ffffff);
+	mfunction_t *f;
+	int old;
+	if (!fnum || pnum >= prinst.maxprogs || !pr_progstate[pnum].functions || fnum >= pr_progstate[pnum].progs->numfunctions)
+		return 0;
+	f = pr_progstate[pnum].functions + fnum;
+	old = f->first_statement;
+	f->first_statement = first_statement;
+	return old;
+}
+
 static pbool PDECL PR_GetFunctionInfo(pubprogfuncs_t *ppf, func_t func, int *args, pbyte **argsizes, int *builtinnum, char *funcname, size_t funcnamesize)
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
@@ -1764,6 +1779,7 @@ static pubprogfuncs_t deffuncs = {
 	ED_ParseEval,
 	PR_SetStringField,
 	PR_DumpProfiles,
+	PR_SetFunctionStatement,
 
 	0, NULL,
 };

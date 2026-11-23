@@ -229,6 +229,8 @@ qboolean NBPath_Compute(nbpath_t *path, const vec3_t start, const vec3_t goal, i
 	if (!nb_mesh.numareas)
 		return false;
 	s = NBNav_AreaAt(start, 96);
+	if (s < 0 && (World_PointContentsWorldOnly(&sv.world, (float*)start) & (FTECONTENTS_WATER | FTECONTENTS_SLIME)))
+		s = NBNav_AreaAt(start, 600);   /* swimming: the floor is a long way down */
 	if (s < 0)
 		s = NBNav_NearestArea(start, 200);
 	g = NBNav_AreaAt(goal, 160);

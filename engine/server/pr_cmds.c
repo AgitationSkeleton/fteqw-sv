@@ -12367,6 +12367,22 @@ int PR_EnableEBFSBuiltin(const char *name, int binum)
 	return 0;	//not known
 }
 
+/* a free builtin slot for an engine-side hook (nextbot wraps a few QC functions); 0 if none */
+int PR_SSQC_AllocBuiltin(builtin_t fn)
+{
+	int binum;
+	for (binum = sizeof(pr_builtin)/sizeof(pr_builtin[0]); --binum; )
+		if (pr_builtin[binum] == fn)
+			return binum;
+	for (binum = sizeof(pr_builtin)/sizeof(pr_builtin[0]); --binum; )
+		if (!pr_builtin[binum] || pr_builtin[binum] == PF_Fixme)
+		{
+			pr_builtin[binum] = fn;
+			return binum;
+		}
+	return 0;
+}
+
 static int PDECL PR_SSQC_MapNamedBuiltin(pubprogfuncs_t *progfuncs, int headercrc, const char *builtinname)
 {
 	int i, binum;

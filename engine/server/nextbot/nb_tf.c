@@ -386,6 +386,7 @@ int NBTF_TeamBlockBits(edict_t *door)
 	return (team >= 1 && team <= 4) ? (0xf & ~(1 << (team - 1))) : 0;
 }
 
+static void TF_InstallHooks(void);
 void NBTF_MapStart(void)
 {
 	tf_profile = (NB_HasField("csqc_maxspeed") || NB_HasField("has_flag")) ? TFP_FO : TFP_TF28;
@@ -393,8 +394,127 @@ void NBTF_MapStart(void)
 	tf_nextcensus = 0;
 	TF_Census();
 	TF_TeamBlocks();
+	if (tf_profile == TFP_TF28)
+		TF_InstallHooks();
 	if (qw_bot_debug.ival)
 		Con_Printf("[nb] TF profile %s, %d teams, %d goals, civilian teams %x\n", tf_profile == TFP_FO ? "FortressOne" : "TF 2.8/2.9", tf_numteams, tf_numgoals, tf_civilianteams);
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * qw_tf_allies: allied teams (hunted's president and bodyguards) are friends. TF 2.8 only knows its own
+ * team, so the engine wraps the progs' damage, medikit and spanner functions: damage between allied
+ * teams is dropped, and while a medic/engineer swings, allied players and buildings count as their own
+ * team (so the medikit heals instead of infecting and the spanner repairs instead of hitting).
+ */
+cvar_t qw_tf_allies = CVARD("qw_tf_allies", "1", "TF: allied teams (e.g. hunted's president and bodyguards) can't hurt each other; medics heal and engineers repair them like teammates.");
+
+#define TF_MAXALLYTHINGS 256
+qboolean NBTF_Allied(int a, int b);
+typedef struct { const char *name; builtin_t fn; func_t func; int orig, binum; } tfhook_t;
+static void QCBUILTIN TFHook_Damage1(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN TFHook_Damage2(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN TFHook_Medikit(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static void QCBUILTIN TFHook_Spanner(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+static tfhook_t tf_hooks[] = {
+	{ "T_Damage", TFHook_Damage1 }, { "TF_T_Damage", TFHook_Damage2 },
+	{ "W_FireMedikit", TFHook_Medikit }, { "W_FireSpanner", TFHook_Spanner },
+};
+
+/* run the progs' own function (the hook stays off for nested calls of the same function) */
+static void TFHook_CallOriginal(tfhook_t *h)
+{
+	svprogfuncs->SetFunctionStatement(svprogfuncs, h->func, h->orig);
+	PR_ExecuteProgram(svprogfuncs, h->func);
+	svprogfuncs->SetFunctionStatement(svprogfuncs, h->func, -h->binum);
+}
+
+/* a player or a building: the things allies are */
+static qboolean TF_IsAllyThing(edict_t *e)
+{
+	const char *cn;
+	if (!e || ED_ISFREE(e))
+		return false;
+	cn = NB_Classname(e);
+	return !strcmp(cn, "player") || !strncmp(cn, "building_", 9);
+}
+
+static qboolean TF_AlliedNotSame(edict_t *a, edict_t *b)
+{
+	int ta, tb;
+	if (a == b || !TF_IsAllyThing(a) || !TF_IsAllyThing(b))
+		return false;
+	ta = (int)NB_GetFloat(a, "team_no");
+	tb = (int)NB_GetFloat(b, "team_no");
+	return ta > 0 && tb > 0 && ta != tb && NBTF_Allied(ta, tb);
+}
+
+static void TFHook_Damage(tfhook_t *h, pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	edict_t *targ = G_EDICT(prinst, OFS_PARM0), *attacker = G_EDICT(prinst, OFS_PARM2);
+	if (qw_tf_allies.ival && TF_AlliedNotSame(targ, attacker))
+		return;   /* allies don't hurt each other */
+	TFHook_CallOriginal(h);
+}
+static void QCBUILTIN TFHook_Damage1(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals) { TFHook_Damage(&tf_hooks[0], prinst, pr_globals); }
+static void QCBUILTIN TFHook_Damage2(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals) { TFHook_Damage(&tf_hooks[1], prinst, pr_globals); }
+
+static void TFHook_TeamSwing(tfhook_t *h)
+{
+	static edict_t *ents[TF_MAXALLYTHINGS];
+	static int oldteam[TF_MAXALLYTHINGS];
+	int n = 0, i, mine;
+	edict_t *me = PROG_TO_EDICT(svprogfuncs, pr_global_struct->self);
+	if (!qw_tf_allies.ival || !me || (mine = (int)NB_GetFloat(me, "team_no")) <= 0)
+	{
+		TFHook_CallOriginal(h);
+		return;
+	}
+	for (i = 1; i < sv.world.num_edicts && n < TF_MAXALLYTHINGS; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		if (TF_AlliedNotSame(me, e))
+		{
+			ents[n] = e;
+			oldteam[n] = (int)NB_GetFloat(e, "team_no");
+			NB_SetFloat(e, "team_no", mine);
+			n++;
+		}
+	}
+	TFHook_CallOriginal(h);
+	for (i = 0; i < n; i++)
+		if (!ED_ISFREE(ents[i]))
+			NB_SetFloat(ents[i], "team_no", oldteam[i]);
+}
+static void QCBUILTIN TFHook_Medikit(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals) { TFHook_TeamSwing(&tf_hooks[2]); }
+static void QCBUILTIN TFHook_Spanner(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals) { TFHook_TeamSwing(&tf_hooks[3]); }
+
+static void TF_InstallHooks(void)
+{
+	extern int PR_SSQC_AllocBuiltin(builtin_t fn);
+	unsigned int i;
+	for (i = 0; i < countof(tf_hooks); i++)
+	{
+		tfhook_t *h = &tf_hooks[i];
+		int old, prevbinum = h->binum;
+		h->func = PR_FindFunction(svprogfuncs, h->name, PR_ANY);
+		h->binum = h->func ? PR_SSQC_AllocBuiltin(h->fn) : 0;
+		if (!h->func || !h->binum)
+		{
+			if (qw_bot_debug.ival)
+				Con_Printf("[nb] qw_tf_allies: %s not hooked (func %d, slot %d)\n", h->name, (int)h->func, h->binum);
+			continue;
+		}
+		old = svprogfuncs->SetFunctionStatement(svprogfuncs, h->func, -h->binum);
+		if (old > 0)
+			h->orig = old;           /* fresh progs: remember the QC body */
+		else if ((old != -h->binum && old != -prevbinum) || h->orig <= 0)
+		{	/* something else (a real builtin?) - leave it alone */
+			svprogfuncs->SetFunctionStatement(svprogfuncs, h->func, old);
+			h->func = 0;
+		}
+		if (qw_bot_debug.ival)
+			Con_Printf("[nb] qw_tf_allies: %s %s\n", h->name, h->func ? va("hooked (builtin %d)", h->binum) : "not hooked");
+	}
 }
 
 static void TF_MaybeCensus(void)
@@ -1197,7 +1317,7 @@ static nbresult_t Defend_Update(nbbot_t *bot, nbaction_t *self, float dt)
 			p[1] = point[1] + crandom() * 400;
 			p[2] = point[2];
 			a = NBNav_AreaAt(p, 200);
-			if (a >= 0 && !(nb_mesh.areas[a].flags & NBAREA_PLAT))   /* never wait in a lift shaft */
+			if (a >= 0 && !(nb_mesh.areas[a].flags & (NBAREA_PLAT | NBAREA_TRAP)))   /* never wait in a lift shaft or a pit */
 			{
 				NBNav_RandomPoint(&nb_mesh.areas[a], d->spot);
 				d->spot[2] += 24;
@@ -1824,6 +1944,7 @@ static void TF_Info_f(void)
 void NBTF_InitCommands(void)
 {
 	Cmd_AddCommandD("qw_bot_tfinfo", TF_Info_f, "List the TF goals the bots know about on this map");
+	Cvar_Register(&qw_tf_allies, "nextbot");
 	{
 		extern void NBTF_InitCommands2(void);
 		NBTF_InitCommands2();
