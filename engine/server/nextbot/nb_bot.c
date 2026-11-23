@@ -623,7 +623,9 @@ static void NB_Think(nbbot_t *bot, float dt)
 	bot->lasthealth = (int)ed->v->health;
 
 	bot->hasaim = false;
-	if (alive)
+	if (nb_game == NBGAME_TF && NBTF_PreThink(bot))
+		;	/* TF took the frame (a feigning spy getting up) */
+	else if (alive)
 	{
 		NBVision_Update(bot);
 		NBIntention_Update(bot, dt);

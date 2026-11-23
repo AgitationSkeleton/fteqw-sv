@@ -163,6 +163,11 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 
 	if (!p->valid || p->cur >= p->numsegs)
 		return false;
+	if (NB_Time() < bot->unstickuntil)
+	{	/* sidestepping out of a stuck spot */
+		NBLoco_SetGoal(bot, bot->unstickgoal);
+		return true;
+	}
 
 	/* advance past reached segments */
 	while (p->cur < p->numsegs)
@@ -259,8 +264,10 @@ void NBLoco_UpdateStuck(nbbot_t *bot)
 	edict_t *self = NB_Self(bot);
 	float now = NB_Time();
 	if (!bot->hasmovegoal || !NB_IsAlive(self)
-		|| (fabs(bot->movegoal[0] - self->v->origin[0]) < 40 && fabs(bot->movegoal[1] - self->v->origin[1]) < 40))
-	{	/* no goal, or holding position on purpose: not stuck */
+		|| (fabs(bot->movegoal[0] - self->v->origin[0]) < 40 && fabs(bot->movegoal[1] - self->v->origin[1]) < 40
+			&& fabs(bot->movegoal[2] + 24 - self->v->origin[2]) < 40))
+	{	/* no goal, or holding position on purpose: not stuck (a goal right above/below us, e.g. on a ramp
+		   beside us, isn't "arrived") */
 		bot->stucktime = 0;
 		VectorCopy(self->v->origin, bot->stuckpos);
 		bot->laststuckcheck = now;
@@ -284,6 +291,32 @@ void NBLoco_UpdateStuck(nbbot_t *bot)
 		bot->stuckevents++;
 		VectorCopy(self->v->origin, bot->stuckpos);
 		bot->path.valid = false;
+		/* sidestep (alternating sides) across the way we were heading, then re-path from there */
+		{
+			static const vec3_t hmins = { -16, -16, -24 }, hmaxs = { 16, 16, 32 };
+			vec3_t to, side, goal;
+			trace_t tr;
+			int k;
+			VectorSubtract(bot->movegoal, self->v->origin, to);
+			to[2] = 0;
+			if (VectorNormalize(to) < 1)
+				VectorSet(to, 1, 0, 0);
+			VectorSet(side, -to[1], to[0], 0);
+			for (k = 0; k < 2; k++)
+			{
+				float sgn = ((bot->stuckevents + k) & 1) ? 1 : -1;
+				VectorMA(self->v->origin, 80 * sgn, side, goal);
+				VectorMA(goal, -24, to, goal);
+				tr = World_Move(&sv.world, self->v->origin, (float*)hmins, (float*)hmaxs, goal, MOVE_NOMONSTERS, (wedict_t*)self);
+				if (tr.fraction > 0.4f)
+				{
+					VectorCopy(tr.endpos, bot->unstickgoal);
+					bot->unstickgoal[2] -= 24;
+					bot->unstickuntil = now + 0.8f;
+					break;
+				}
+			}
+		}
 		if (qw_bot_debug.ival)
 			Con_Printf("[nb] %s stuck at %.0f %.0f %.0f\n", bot->cl->name, self->v->origin[0], self->v->origin[1], self->v->origin[2]);
 		NBIntention_OnStuck(bot);

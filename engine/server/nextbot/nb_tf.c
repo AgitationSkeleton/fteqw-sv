@@ -467,6 +467,11 @@ typedef struct
 	int disguisestep;
 	int buildstep;
 	float buildstep_t;
+	float nextunfeign;    /* a feigning bot: when to try getting up again */
+	edict_t *ignoreenemy; /* a fight that went nowhere: leave this enemy alone until ignoreuntil */
+	float ignoreuntil;
+	const void *potweapon;/* weapon picked for shooting on the move */
+	float potnextweapon;
 } tfbot_t;
 
 static tfbot_t *TF(nbbot_t *bot)
@@ -604,6 +609,15 @@ static qboolean TF_TeamMay(int goalteam, int team)
 	return goalteam == 0 || goalteam == team;
 }
 
+/* items: TFGI_REVERSE_AP (64) means only players who DON'T match team_no may take it (a flag
+   any team but its owner can pick up, as on four-team maps) */
+static qboolean TF_ItemTeamMay(tfgoal_t *g, int team)
+{
+	if ((int)NB_GetFloat(g->ed, "goal_activation") & 64)
+		return g->team == 0 || g->team != team;
+	return TF_TeamMay(g->team, team);
+}
+
 /* an enemy item this team can steal (at home or dropped) */
 static tfgoal_t *TF_ItemToSteal(nbbot_t *bot, edict_t **carrier)
 {
@@ -614,7 +628,7 @@ static tfgoal_t *TF_ItemToSteal(nbbot_t *bot, edict_t **carrier)
 	{
 		tfgoal_t *g = &tf_goals[i];
 		int state;
-		if (g->kind != TFG_ITEM || !TF_TeamMay(g->team, team) || NBTF_Allied(g->ownedby, team))
+		if (g->kind != TFG_ITEM || !TF_ItemTeamMay(g, team) || NBTF_Allied(g->ownedby, team))
 			continue;
 		state = (int)NB_GetFloat(g->ed, "goal_state");
 		if (state == 3)
@@ -815,12 +829,13 @@ static const tfweapon_t *TF_ChooseWeapon(int pclass, float dist)
  * actions
  */
 typedef struct { nbaction_t base; } tfroot_t;
-typedef struct { nbaction_t base; const tfweapon_t *weapon; float nextweapon; int strafedir; float nextstrafe; } tffight_t;
-typedef struct { nbaction_t base; vec3_t pos; float until; edict_t *ent; int kind; } tfgoto_t;
+typedef struct { nbaction_t base; const tfweapon_t *weapon; float nextweapon; int strafedir; float nextstrafe; float checkat, checkdist; } tffight_t;
+typedef struct { nbaction_t base; vec3_t pos; float until; edict_t *ent; int kind; float bestd; } tfgoto_t;
 typedef struct { nbaction_t base; vec3_t spot; float nextspot; float until; } tfdefend_t;
 typedef struct { nbaction_t base; edict_t *patient; float until; } tfheal_t;
 typedef struct { nbaction_t base; vec3_t spot; float until; int step; float steptime; } tfbuild_t;
 
+static float TF_EngageRange(nbbot_t *bot);
 static const nbactionvt_t TF_RootVT, TF_FightVT, TF_GotoVT, TF_DefendVT, TF_HealVT, TF_BuildVT, TF_DetpackVT;
 
 /* --- grenades (both slots, while fighting) ---------------------------------------------------- */
@@ -883,6 +898,26 @@ static nbresult_t Fight_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	if (now - bot->enemyseen > 1.5f)
 		return NB_Done("lost sight");
 	dist = Distance(me->v->origin, e->v->origin);
+	if (dist > TF_EngageRange(bot) * 1.5f)
+		return NB_Done("out of range");
+	/* a stand-off (balcony to balcony, across water): if it isn't getting any closer, go back to work */
+	if (!f->checkat)
+	{
+		f->checkat = now + 5;
+		f->checkdist = dist;
+	}
+	else if (now >= f->checkat)
+	{
+		if (pclass != PC_SNIPER && dist > 350 && dist > f->checkdist - 96 && e->v->health > 0
+			&& (dist > 600 || now - bot->lastpain > 1.0f))
+		{
+			t->ignoreenemy = e;
+			t->ignoreuntil = now + 8 + frandom() * 4;
+			return NB_Done("stand-off");
+		}
+		f->checkat = now + 5;
+		f->checkdist = dist;
+	}
 	/* never swap a spinning assault cannon (FortressOne asserts on it) */
 	if (!f->weapon || (now >= f->nextweapon && !(pclass == PC_HVYWEAP && (bot->cl->lastcmd.buttons & 1))))
 	{
@@ -918,6 +953,8 @@ static nbresult_t Fight_Update(nbbot_t *bot, nbaction_t *self, float dt)
 			bot->buttons |= 1;
 		if (pclass == PC_HVYWEAP && f->weapon->impulse == 7)
 			bot->hasmovegoal = false;   /* assault cannon: rooted while firing */
+		else if (dist > f->weapon->maxdist * 0.6f + 150 && NBLoco_PathTo(bot, e->v->origin, 1))
+			;	/* too far for this weapon: walk the mesh toward them instead of strafing at a ledge */
 		else
 			NB_CombatMove(bot, dist, f->weapon->mindist + 40, f->weapon->maxdist * 0.6f, &f->strafedir, &f->nextstrafe);
 	}
@@ -934,13 +971,82 @@ static void Fight_OnEnd(nbbot_t *bot, nbaction_t *self, nbaction_t *next)
 		t->primetime = 0;
 	}
 	t->sniperstart = 0;
+	t->potweapon = NULL;   /* Fight changed weapons */
 }
 static const nbactionvt_t TF_FightVT = { "Fight", sizeof(tffight_t), Fight_OnStart, Fight_Update, Fight_OnEnd };
 
-/* fight anything in sight before going on; carriers and VIPs only fight when cornered */
+/* how far a bot will stop what it's doing to fight; beyond that it shoots on the move (TF_Potshot) */
+static float TF_EngageRange(nbbot_t *bot)
+{
+	return TF_Class(NB_Self(bot)) == PC_SNIPER ? 3000 : 850;
+}
+
+/* fight anything close enough before going on; carriers and VIPs only fight when cornered */
 static qboolean TF_WantsFight(nbbot_t *bot)
 {
-	return bot->enemy && NB_Time() - bot->enemyseen < 0.2f && NBTF_IsEnemy(bot, bot->enemy);
+	tfbot_t *t = TF(bot);
+	if (!bot->enemy || NB_Time() - bot->enemyseen >= 0.2f || !NBTF_IsEnemy(bot, bot->enemy))
+		return false;
+	if (bot->enemy == t->ignoreenemy && NB_Time() < t->ignoreuntil)
+		return false;
+	return Distance(NB_Self(bot)->v->origin, bot->enemy->v->origin) <= TF_EngageRange(bot);
+}
+
+/* an enemy in sight but not worth stopping for (too far, or a stalemate): shoot at it while going on */
+static void TF_Potshot(nbbot_t *bot)
+{
+	tfbot_t *t = TF(bot);
+	edict_t *me = NB_Self(bot), *e = bot->enemy;
+	int pclass = TF_Class(me);
+	float now = NB_Time(), dist;
+	const tfweapon_t *w;
+	vec3_t aim;
+	if (!e || now - bot->enemyseen > 0.3f || !NBTF_IsEnemy(bot, e))
+		return;
+	/* the assault cannon roots you, the rifle needs a charge, a disguised spy shouldn't give itself away */
+	if (pclass == PC_HVYWEAP || pclass == PC_SNIPER || pclass == PC_SPY || pclass == PC_CIVILIAN)
+		return;
+	dist = Distance(me->v->origin, e->v->origin);
+	w = TF_ChooseWeapon(pclass, dist);
+	if (!w || w->speed == 600)   /* lobbed / flame weapons are no good at range */
+		return;
+	if ((const void*)w != t->potweapon && now >= t->potnextweapon)
+	{
+		TF_Impulse(bot, w->impulse);
+		t->potweapon = w;
+		t->potnextweapon = now + 1.0f;
+	}
+	if (t->potweapon != (const void*)w)
+		return;
+	NB_LeadTarget(bot, e, w->speed, aim);
+	NBBody_AimAt(bot, aim);
+	if (now - bot->enemyfirstseen > bot->reaction && NBBody_IsAimedAt(bot, aim, 5 + (1 - bot->skill) * 8))
+		bot->buttons |= 1;
+}
+
+static void TF_SpyDisguise(nbbot_t *bot);
+
+/* every frame, whatever the bot is doing: spy disguise, and getting up from an accidental feign */
+qboolean NBTF_PreThink(nbbot_t *bot)
+{
+	tfbot_t *t = TF(bot);
+	edict_t *me = NB_Self(bot);
+	float now = NB_Time();
+	if (TF_Class(me) == PC_SPY && NB_GetFloat(me, "is_feigning") > 0 && me->v->health > 0)
+	{	/* bots never mean to feign: stand up (TF_SPY_DIE toggles; it refuses while someone stands on us) */
+		bot->hasmovegoal = false;
+		bot->path.valid = false;
+		bot->wantjump = false;
+		if (tfi->feign && now >= t->nextunfeign)
+		{
+			TF_Impulse(bot, tfi->feign);
+			t->nextunfeign = now + 1.5f;
+		}
+		return true;
+	}
+	if (NB_IsAlive(me) && NB_TeamOf(me) > 0 && TF_Class(me) > 0)
+		TF_SpyDisguise(bot);
+	return false;
 }
 
 /* --- Goto (fetch item / capture / objective / resupply / detpack spot) ------------------------ */
@@ -950,6 +1056,7 @@ static nbresult_t Goto_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *prior
 {
 	tfgoto_t *g = (tfgoto_t*)self;
 	g->until = NB_Time() + 25;
+	g->bestd = 1e9;
 	bot->path.valid = false;
 	return NB_Continue();
 }
@@ -981,11 +1088,19 @@ static nbresult_t Goto_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	/* the fight comes first unless we're carrying the flag near home */
 	if (TF_WantsFight(bot) && (g->kind != GOTO_CAPTURE || Distance(me->v->origin, g->pos) > 500) && TF_Class(me) != PC_CIVILIAN)
 		return NB_SuspendFor(NBAction_New(&TF_FightVT), "enemy");
+	TF_Potshot(bot);
 	if (g->kind == GOTO_FETCH && g->ent && (int)NB_GetFloat(g->ent, "goal_state") == 1)
 		return NB_Done("someone took it");
 	if (g->kind == GOTO_CAPTURE && !TF_CarriedItem(bot))
 		return NB_Done("captured / dropped");
 	d = Distance(me->v->origin, g->pos);
+	/* long trips (2fort's flag runs) outlast a flat timeout: keep going while it's getting closer */
+	if (d < g->bestd - 128)
+	{
+		g->bestd = d;
+		if (g->until < NB_Time() + 15)
+			g->until = NB_Time() + 15;
+	}
 	if (d < 24 && NB_Time() - self->started > 1)
 	{
 		if (g->ent)
@@ -1029,6 +1144,7 @@ static nbresult_t Defend_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	vec3_t point;
 	if (TF_WantsFight(bot))
 		return NB_SuspendFor(NBAction_New(&TF_FightVT), "enemy");
+	TF_Potshot(bot);
 	if (NB_Time() > d->until)
 		return NB_Done("rotate");
 	if (!TF_DefencePoint(bot, point, &carrier))
@@ -1398,12 +1514,22 @@ static void TF_SpyDisguise(nbbot_t *bot)
 			break;
 	if (enemy > tf_numteams)
 		return;
+	/* TF menus: MENU_SPY 12 (1 skin, 2 colour, 3 FEIGN, ...), MENU_SPY_COLOR 14. Only press a menu key
+	   when that menu is really open: a key landing in the wrong menu feigns death or switches weapon. */
 	switch (t->disguisestep)
 	{
 	case 0: TF_Impulse(bot, tfi->spymenu); t->disguisestep = 1; break;   /* spy menu */
-	case 1: TF_Impulse(bot, 2); t->disguisestep = 2; break;              /* 2 = change team */
-	case 2: TF_Impulse(bot, enemy); t->disguisestep = 3; break;          /* the enemy team */
-	default: t->disguisestep = 0; t->disguisestep_t = now + 20; return;  /* retry later if it failed */
+	case 1:
+		if ((int)NB_GetFloat(me, "current_menu") != 12)
+			goto failed;
+		TF_Impulse(bot, 2); t->disguisestep = 2; break;              /* 2 = change team */
+	case 2:
+		if ((int)NB_GetFloat(me, "current_menu") != 14)
+			goto failed;
+		TF_Impulse(bot, enemy); t->disguisestep = 3; break;          /* the enemy team */
+	default:
+	failed:
+		t->disguisestep = 0; t->disguisestep_t = now + 20; return;  /* retry later */
 	}
 	t->disguisestep_t = now + 0.4f;
 }
@@ -1520,7 +1646,6 @@ static nbresult_t Root_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	TF_MaybeCensus();
 	if (team <= 0 || pclass <= 0 || !me->v->modelindex)
 		return NB_SuspendFor(NBAction_New(&TF_JoinVT), "join");
-	TF_SpyDisguise(bot);
 
 	/* carrying an enemy item: bring it home */
 	item = TF_CarriedItem(bot);

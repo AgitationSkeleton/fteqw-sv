@@ -161,9 +161,10 @@ static qboolean NB_AStar(int s, int g, int team, nbcostfn_t cost, void *ctx, flo
 }
 
 /* point on the shared edge of a and b, closest to 'from' */
-static void NB_PortalPoint(const nbarea_t *a, const nbarea_t *b, const vec3_t from, vec3_t out)
+static void NB_PortalPoint(const nbarea_t *a, const nbarea_t *b, const vec3_t from, vec3_t out, int how)
 {
 	float lo, hi;
+	float maxup = how == NBLINK_WALK ? NB_STEPSIZE + 4 : (how == NBLINK_JUMP ? NB_JUMPHEIGHT : 99999);
 	/* overlap in x and y; areas touch along one axis */
 	float ox0 = max(a->mins[0], b->mins[0]), ox1 = min(a->maxs[0], b->maxs[0]);
 	float oy0 = max(a->mins[1], b->mins[1]), oy1 = min(a->maxs[1], b->maxs[1]);
@@ -173,6 +174,19 @@ static void NB_PortalPoint(const nbarea_t *a, const nbarea_t *b, const vec3_t fr
 		if (lo > hi) lo = hi = (ox0 + ox1) * 0.5f;
 		out[0] = bound(lo, from[0], hi);
 		out[1] = (oy0 + oy1) * 0.5f;
+		/* merged areas only connect where the node links were: a floor strip beside a ramp shares a long
+		   edge with it but can only step onto it where the ramp is low. Cross where the climb is possible. */
+		if (NBNav_FloorZ(b, out[0], out[1]) - NBNav_FloorZ(a, out[0], out[1]) > maxup)
+		{
+			float x, bestd = 1e9, bx = out[0];
+			for (x = lo; x <= hi; x += 8)
+				if (NBNav_FloorZ(b, x, out[1]) - NBNav_FloorZ(a, x, out[1]) <= maxup && fabs(x - from[0]) < bestd)
+				{
+					bestd = fabs(x - from[0]);
+					bx = x;
+				}
+			out[0] = bx;
+		}
 	}
 	else
 	{
@@ -180,6 +194,17 @@ static void NB_PortalPoint(const nbarea_t *a, const nbarea_t *b, const vec3_t fr
 		if (lo > hi) lo = hi = (oy0 + oy1) * 0.5f;
 		out[1] = bound(lo, from[1], hi);
 		out[0] = (ox0 + ox1) * 0.5f;
+		if (NBNav_FloorZ(b, out[0], out[1]) - NBNav_FloorZ(a, out[0], out[1]) > maxup)
+		{
+			float y, bestd = 1e9, by = out[1];
+			for (y = lo; y <= hi; y += 8)
+				if (NBNav_FloorZ(b, out[0], y) - NBNav_FloorZ(a, out[0], y) <= maxup && fabs(y - from[1]) < bestd)
+				{
+					bestd = fabs(y - from[1]);
+					by = y;
+				}
+			out[1] = by;
+		}
 	}
 	if (ox1 < ox0 || oy1 < oy0)
 	{	/* not adjacent (jump/drop across a gap, teleport): aim at b's nearest point */
@@ -236,7 +261,7 @@ qboolean NBPath_Compute(nbpath_t *path, const vec3_t start, const vec3_t goal, i
 			VectorCopy(from->center, seg->pos);
 		}
 		else
-			NB_PortalPoint(from, to, prev, seg->pos);
+			NB_PortalPoint(from, to, prev, seg->pos, link->type);
 		VectorCopy(seg->pos, prev);
 	}
 	{

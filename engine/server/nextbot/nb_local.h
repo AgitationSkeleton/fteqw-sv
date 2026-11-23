@@ -246,6 +246,8 @@ struct nbbot_s
 	vec3_t stuckpos;
 	float jumptime;
 	int stuckevents;
+	float unstickuntil;   /* sidestepping out of a stuck spot until then */
+	vec3_t unstickgoal;
 	edict_t *badgoal[4];      /* items/goals that failed recently */
 	float badgoaluntil[4];
 	int deaths, suicides;
@@ -325,6 +327,7 @@ nbaction_t *NBDM_RootAction(void);
 nbaction_t *NBTF_RootAction(void);
 void NBTF_MapStart(void);
 void NBTF_ClientJoin(nbbot_t *bot);
+qboolean NBTF_PreThink(nbbot_t *bot);
 int NBTF_TeamBlockBits(edict_t *door);
 
 /* cvars shared by modules */
