@@ -26,9 +26,12 @@ or finish. This is a clean-room implementation in C under the GPL. It contains n
 
 * **Nav mesh.** Generated from the BSP the first time a map is played (a few seconds) and saved
   as `<gamedir>/nav/<map>.qnav`. The generator walks the map with the player hull from every
-  spawn point, item and objective. It handles steps, jumps, drops, water, lava and slime,
-  teleporters, jump pads (`trigger_push`), lifts (`func_plat` and elevator doors), and doors and
-  hurt triggers. A mesh is regenerated automatically when its map changes.
+  spawn point, item and objective. It handles steps, jumps, running jumps across gaps, drops,
+  deep water (swimming down and climbing out), lava and slime, teleporters, jump pads
+  (`trigger_push`), lifts (`func_plat` and elevator doors), and doors and hurt triggers. Areas
+  with no way back to a spawn (sealed pits, flooded rooms) are marked as traps: bots keep out of
+  them and respawn if they fall in. A mesh is regenerated automatically when its map changes or
+  was made by an older version.
 * **Deathmatch.** Bots collect weapons, armour, health, ammo and powerups by need and distance.
   They choose a weapon for the range, lead projectiles, strafe without walking off ledges, chase
   enemies they lose sight of, climb out of lava, and roam.
@@ -49,8 +52,9 @@ or finish. This is a clean-room implementation in C under the GPL. It contains n
   * medics heal;
   * demomen set detpacks on detpack goals (well6's grates);
   * spies disguise as the enemy team;
-  * on Hunted, the VIP heads for the escape lift and the bodyguards stay with him. Team-only
-    teleporters and the President-only hazard are respected;
+  * on Hunted, the VIP heads for the escape pillar, waits until it's down, rides it up and
+    escapes; the bodyguards stay with him. Team-only teleporters and the President-only hazard
+    are respected;
   * on escort maps with an escape vehicle (border1's truck: a door that travels far and holds a
     team trigger), the escaping team jumps into the vehicle, stands on its start trigger, and
     fights from inside it without stepping off while it crosses.
@@ -77,6 +81,10 @@ The `qw_bot_*` names are compatible with the earlier fteqw-sv bot build, so exis
 | `qw_bot_mapcycle` | 1 | game-code map changes follow `<gamedir>/mapcycle.txt` (one map per line) |
 | `qw_bot_verbose` | 1 | bot messages in the console |
 | `qw_bot_debug` | 0 | 1 = stuck/death details, 2 = every action change |
+| `qw_bot_teamghost` | 1 | bots move through bots of their own or an allied team (no jams in narrow corridors); humans still collide with everyone |
+| `qw_tf_allies` | 1 | TF 2.8/2.9 progs: allied teams (Hunted's VIP and bodyguards) can't hurt each other, medics heal and engineers repair them like teammates |
+| `qw_autojump` | "" | alias of FTE's `pm_autobunny`: holding jump re-jumps on landing (tf2c/pf2-style autojump); in serverinfo, so FTE clients predict it |
+| `sv_heatmap` (+ `_flush`, `_maxbuckets`) | 0 | write position/death/movement samples to `<gamedir>/heatmap/*.hm` for heatmap sites |
 | `discord_webhook_url` | "" | post real players' joins, leaves and chat to a Discord webhook |
 
 | Command | |
@@ -96,6 +104,11 @@ Other changes the bot build makes to the server:
 * It adds `map` to the server status, for Gamedig and server lists.
 * Bots apply the `color`/`skin`/`team` stuffcmds the game code sends, so TF's team-cheat check
   accepts them.
+* dpmaster `getinfo` replies carry the server info and echo the challenge, so dpmaster-style
+  masters (and FortressOne's browser) list the server. `com_protocolname` may list several names
+  (for example `"FortressOne FTE-Quake"`): the first is advertised, all of them may connect.
+* `qw_tf_allies` is done by wrapping four progs functions from the engine (qclib gained
+  `SetFunctionStatement` for this); no QuakeC is changed.
 
 ### Building
 
@@ -109,6 +122,7 @@ make sv-rel                        # Linux: release/fteqw-sv
 ```
 
 The bot code is in `engine/server/nextbot/`. `nb_local.h` describes the design.
+Changes between releases are in [CHANGELOG.md](CHANGELOG.md).
 
 ### Install
 
@@ -126,14 +140,18 @@ game code, TeamFortress QuakeWorld 2.8 and FortressOne v1.0.4:
   * The missing items are mostly on rocket-jump ledges.
 * Deathmatch: dm4, dm6.
 * CTF: 4f4 (four teams) and 2fort5r.
-* Hunted: the VIP reaches the escape lift with bodyguards around him.
+* Hunted: the VIP rides the escape pillar and escapes, with 12 bots on the server.
+* 4fort5r (4f4 with real flags): attackers spread over the three enemy flags and take them.
+* dm4ish: bots running-jump onto the quad balcony and drop back down.
 * border1: the Immigrants ride the truck across and score.
 * FortressOne: the bots join, change class and fight on 2fort5r.
 
 ### Limits
 
-* Bots don't rocket-jump or concussion-jump, so items only reachable that way are skipped.
-  `qw_bot_navcheck` lists them for a map.
+* Bots don't rocket-jump or concussion-jump, so items only reachable that way are skipped
+  (plain running jumps across gaps are used). `qw_bot_navcheck` lists them for a map.
+* Mesh generation is slower with running jumps (a few seconds on big maps); it happens once per
+  map.
 * `func_train` lifts are not linked.
 * A few maps generate no mesh because they have no spawn points the generator can stand on
   (in our set: 1on1r, endif).
