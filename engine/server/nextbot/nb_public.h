@@ -16,5 +16,7 @@ qboolean NB_MapcycleNext(char *level, int size);
 void NB_LoadMapcycle(void);
 void NB_DiscordPost(const char *msg);                /* real players' join/leave/chat */
 void NB_StuffCmd(struct client_s *cl, const char *text); /* stuffcmd text sent to a bot */
+struct edict_s;
+qboolean NB_PassThrough(struct edict_s *mover, struct edict_s *other); /* player movement: mover ignores other */
 #endif
 #endif

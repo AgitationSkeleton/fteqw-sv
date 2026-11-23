@@ -166,6 +166,28 @@ nbbot_t *NB_BotForClient(client_t *cl)
 	return &nb_bots[i];
 }
 
+cvar_t qw_bot_teamghost = CVARD("qw_bot_teamghost", "1", "Bots move through bots of their own (or an allied) team, so they don't jam narrow corridors. Humans still collide with everyone.");
+
+nbbot_t *NB_BotForEdict(edict_t *ed);
+int NB_TeamOf(edict_t *ed);
+/* SV_RunCmd's pmove: a bot doesn't collide with a teammate bot (hunted's long corridor) */
+qboolean NB_PassThrough(edict_t *mover, edict_t *other)
+{
+	int a, b;
+	if (!qw_bot_teamghost.ival || !NB_BotForEdict(mover) || !NB_BotForEdict(other))
+		return false;
+	a = NB_TeamOf(mover);
+	b = NB_TeamOf(other);
+	if (a <= 0 || b <= 0)
+		return false;
+	if (nb_game == NBGAME_TF)
+	{
+		extern qboolean NBTF_Allied(int a, int b);
+		return NBTF_Allied(a, b);
+	}
+	return a == b;
+}
+
 nbbot_t *NB_BotForEdict(edict_t *ed)
 {
 	int n = NUM_FOR_EDICT(svprogfuncs, ed) - 1;
@@ -1030,6 +1052,7 @@ void NB_Init(void)
 	Cvar_Register(&qw_bot_spawnloadouts_lg, grp);
 	Cvar_Register(&discord_webhook_url, grp);
 	Cvar_Register(&qw_bot_skill, grp);
+	Cvar_Register(&qw_bot_teamghost, grp);
 	Cvar_Register(&qw_bot_debug, grp);
 	Cvar_Register(&qw_bot_nav_autogen, grp);
 	Cvar_Register(&qw_bot_mapcycle, grp);

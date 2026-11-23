@@ -7054,6 +7054,8 @@ static void AddLinksToPmove (world_t *w, wedict_t *player, areagridlink_t *node)
 			continue;		// player's own missile
 		if (check == player)
 			continue;
+		if (NB_PassThrough((edict_t*)player, (edict_t*)check))
+			continue;		// teammate bots don't jam each other in corridors
 		solid = check->v->solid;
 		if (
 			(solid == SOLID_TRIGGER && check->v->skin < 0)
