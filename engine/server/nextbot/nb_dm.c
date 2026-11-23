@@ -460,7 +460,14 @@ static nbresult_t GetItem_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *pr
 	edict_t *me = NB_Self(bot);
 	VectorAdd(g->item->v->absmin, g->item->v->absmax, g->pos);
 	VectorScale(g->pos, 0.5f, g->pos);
-	g->until = NB_Time() + 4 + Distance(me->v->origin, g->pos) / 150;
+	{	/* time allowed: by the path's length, which can be far more than the straight line (an
+		   item on a ledge right above us may be a long way round) */
+		float d = Distance(me->v->origin, g->pos);
+		float travel = NBPath_TravelDistance(me->v->origin, g->pos, NB_TeamOf(me), 0);
+		if (travel > d)
+			d = travel;
+		g->until = NB_Time() + 4 + d / 150;
+	}
 	bot->path.valid = false;
 	return NB_Continue();
 }

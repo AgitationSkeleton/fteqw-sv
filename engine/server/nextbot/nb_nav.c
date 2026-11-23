@@ -15,7 +15,7 @@
 nbmesh_t nb_mesh;
 
 #define QNAV_MAGIC   (('V'<<24)|('A'<<16)|('N'<<8)|'Q')
-#define QNAV_VERSION 8
+#define QNAV_VERSION 9
 
 static const vec3_t nb_hullmins = { -16, -16, -24 };
 static const vec3_t nb_hullmaxs = { 16, 16, 32 };
@@ -95,6 +95,7 @@ typedef struct
 	unsigned int flags;
 	int area;
 	int hashnext;
+	qboolean isolate;      /* a running jump's takeoff or landing spot: its own one-cell area */
 } nbnode_t;
 
 #define NB_MAXNODES 400000
@@ -138,6 +139,7 @@ static int NB_AddNode(int ix, int iy, float z, unsigned int flags)
 	gn[n].link[0] = gn[n].link[1] = gn[n].link[2] = gn[n].link[3] = -1;
 	gn[n].flags = flags;
 	gn[n].area = -1;
+	gn[n].isolate = false;
 	h = NB_Hash(ix, iy);
 	gn[n].hashnext = ghash[h];
 	ghash[h] = n;
@@ -327,6 +329,395 @@ static void NB_SeedFromEntities(void)
 }
 
 /* ------------------------------------------------------------------------------------------------
+ * generation: running jumps
+ *
+ * NB_Expand only links neighbouring grid columns, so a gap wider than a standing jump is never
+ * crossed, even when a player gets over it at a run (the quad balcony on dm4ish is reached that way,
+ * from the corner of the ledge beside it). From nodes at an edge, in NB_RJ_HEADINGS headings: find
+ * where the floor ends and simulate a jump from there at run speed (hull traces, gravity, sliding
+ * along walls). Where one comes down on another floor, pick a node there to aim at and test again
+ * the way a bot will do it: running straight at that node and steering at it in the air. A link
+ * from the node to that target is kept only if
+ *   - a slow, early jump and a full speed jump from the very edge both come down on the target's
+ *     floor, and so do runs a couple of degrees off the line,
+ *   - there is room behind the takeoff to get up to speed,
+ *   - nothing under the arcs is lava, slime, sky or a pit deeper than a safe drop,
+ *   - the target isn't already a short walk away (so ordinary floors don't fill with jumps).
+ */
+typedef struct { int from, to; } nbjump_t;
+static nbjump_t *gjumps;
+static int gnumjumps, gmaxjumps;
+static int *gvisit, *gdepth, *gbfs;
+static int gvisitid;
+
+#define NB_RJ_HEADINGS  64     /* fine: some gaps can be crossed only along a narrow range of lines */
+#define NB_RJ_MAXEDGE   48     /* the floor must end within this far ahead of the node */
+#define NB_RJ_MAXRISE   40     /* a jump lifts ~45 */
+#define NB_RJ_MAXFALL   160
+#define NB_RJ_MAXDIST   336    /* furthest landing considered (a full speed jump falling NB_RJ_MAXFALL) */
+#define NB_RJ_SLOWSPEED 300    /* the slow jump: not quite up to speed ... */
+#define NB_RJ_EARLY     24     /* ... and jumping this far before the edge (bots jump within NB_RJ_STEP + 8 of it) */
+
+/* walk the hull from origin o along u until the floor ends. Returns how far the last supported
+   position is (copied to edge), or -1 if a wall comes first or the floor goes on */
+static float NB_FindEdge(const vec3_t o, const vec3_t u, vec3_t edge)
+{
+	vec3_t prev, p, down;
+	trace_t tr;
+	float t;
+	VectorCopy(o, prev);
+	for (t = 4; t <= NB_RJ_MAXEDGE; t += 4)
+	{
+		VectorSet(p, o[0] + u[0] * t, o[1] + u[1] * t, prev[2]);
+		tr = NB_HullTrace(prev, p);
+		if (tr.startsolid || tr.fraction < 1)
+			return -1;
+		VectorSet(down, p[0], p[1], p[2] - NB_STEPSIZE - 1);
+		tr = NB_HullTrace(p, down);
+		if (tr.fraction >= 1 || tr.plane.normal[2] < 0.7f)
+		{
+			VectorCopy(prev, edge);
+			return t - 4;
+		}
+		VectorCopy(tr.endpos, prev);
+	}
+	return -1;
+}
+
+/* NB_RUNUP of floor behind o (a step or two allowed) to get up to speed */
+static qboolean NB_RunUpClear(const vec3_t o, const vec3_t u)
+{
+	int i;
+	for (i = 1; i <= 2; i++)
+	{
+		vec3_t a, b, down;
+		trace_t tr;
+		float t = NB_RUNUP * i / 2;
+		VectorSet(a, o[0], o[1], o[2] + NB_STEPSIZE);
+		VectorSet(b, o[0] - u[0] * t, o[1] - u[1] * t, o[2] + NB_STEPSIZE);
+		tr = NB_HullTrace(a, b);
+		if (tr.startsolid || tr.fraction < 1)
+			return false;
+		VectorSet(down, b[0], b[1], o[2] - NB_STEPSIZE - 1);
+		tr = NB_HullTrace(b, down);
+		if (tr.startsolid || tr.fraction >= 1 || tr.plane.normal[2] < 0.7f)
+			return false;
+	}
+	return true;
+}
+
+/* a jump from start at speed along u: where the hull lands. It slides along walls and ceilings
+   as a player does, and with a target, steers in the air toward it as a bot does (NB_AirSteer:
+   QW air control only nudges, up to NB_AIRSPEED across the line of flight); false if it doesn't
+   come down on a walkable floor within NB_RJ_MAXFALL, or if under the arc a jump that fell short
+   would end up in lava, slime or a pit (no floor within a safe drop) */
+static qboolean NB_SimJump(const vec3_t start, const vec3_t u, float speed, const vec3_t target, vec3_t land)
+{
+	vec3_t pos, prev, vel;
+	trace_t tr;
+	int step, bump, numlava = 0;
+	float lavad[64], left;
+	const float dt = 0.01f;
+	VectorCopy(start, pos);
+	VectorSet(vel, u[0] * speed, u[1] * speed, NB_JUMPSPEED);
+	for (step = 0; step < 200; step++)
+	{
+		if (!(step & 3))
+		{	/* what's below */
+			vec3_t down, feet;
+			VectorSet(down, pos[0], pos[1], start[2] - NB_MAXDROP);
+			tr = NB_HullTrace(pos, down);
+			if (!tr.startsolid)
+			{
+				if (tr.fraction >= 1)
+					return false;
+				VectorCopy(tr.endpos, feet);
+				feet[2] -= 20;
+				if ((NB_Contents(feet) | NB_Contents(tr.endpos)) & (FTECONTENTS_LAVA | FTECONTENTS_SLIME | FTECONTENTS_SKY))
+					return false;
+			}
+			/* the hull can hang over a rim with lava right under the middle: look straight down too
+			   (however deep: a fall that clips the rim still ends up in it). Lava just beside the
+			   takeoff or landing edge is judged at the end */
+			down[2] = start[2] - 2048;
+			tr = World_Move(&sv.world, pos, vec3_origin, vec3_origin, down, MOVE_NOMONSTERS, (wedict_t*)sv.world.edicts);
+			if (!tr.startsolid && tr.fraction < 1 && numlava < (int)countof(lavad))
+			{
+				VectorCopy(tr.endpos, feet);
+				feet[2] += 2;
+				if (NB_Contents(feet) & (FTECONTENTS_LAVA | FTECONTENTS_SLIME))
+					lavad[numlava++] = sqrt((pos[0] - start[0]) * (pos[0] - start[0]) + (pos[1] - start[1]) * (pos[1] - start[1]));
+			}
+		}
+		if (target)
+		{	/* air control, as pmove applies it */
+			vec3_t wish;
+			float add;
+			NB_AirSteer(pos, vel, target, wish);
+			add = NB_AIRSPEED - DotProduct(vel, wish);
+			if (add > 0)
+				VectorMA(vel, min(add, movevars.accelerate * NB_RUNSPEED * dt), wish, vel);
+		}
+		vel[2] -= movevars.gravity * dt;
+		for (bump = 0, left = dt; bump < 4 && left > 0; bump++)
+		{
+			VectorCopy(pos, prev);
+			VectorMA(pos, left, vel, pos);
+			tr = NB_HullTrace(prev, pos);
+			if (tr.startsolid || tr.allsolid)
+				return false;
+			left *= 1 - tr.fraction;
+			if (tr.fraction < 1)
+			{
+				VectorCopy(tr.endpos, pos);
+				if (tr.plane.normal[2] >= 0.7f)
+				{
+					float total;
+					int k;
+					if (vel[2] > 0)
+						return false;
+					VectorCopy(pos, land);
+					total = sqrt((pos[0] - start[0]) * (pos[0] - start[0]) + (pos[1] - start[1]) * (pos[1] - start[1]));
+					for (k = 0; k < numlava; k++)
+						if (lavad[k] > 32 && lavad[k] < total - 32)
+							return false;   /* lava out in the gap, under the middle of the arc */
+					return true;
+				}
+				/* a wall, ceiling or steep slope: slide along it for the rest of the step, as player
+				   movement does */
+				{
+					float back = DotProduct(vel, tr.plane.normal);
+					VectorMA(vel, -back, tr.plane.normal, vel);
+				}
+			}
+		}
+		if (pos[2] < start[2] - NB_RJ_MAXFALL - 8)
+			return false;
+	}
+	return false;
+}
+
+/* the generation node nearest p (same floor within ztol), or -1 */
+static int NB_NodeNear(const vec3_t p, float ztol)
+{
+	int ix = (int)floor(p[0] / NB_GEN_STEP + 0.5f), iy = (int)floor(p[1] / NB_GEN_STEP + 0.5f);
+	int dx, dy, n, best = -1;
+	float bestd = 1e9;
+	for (dy = -1; dy <= 1; dy++)
+		for (dx = -1; dx <= 1; dx++)
+		{
+			float ddx, ddy;
+			n = NB_FindNode(ix + dx, iy + dy, p[2], ztol);
+			if (n < 0)
+				continue;
+			ddx = gn[n].ix * NB_GEN_STEP - p[0];
+			ddy = gn[n].iy * NB_GEN_STEP - p[1];
+			if (ddx * ddx + ddy * ddy < bestd)
+			{
+				bestd = ddx * ddx + ddy * ddy;
+				best = n;
+			}
+		}
+	return best;
+}
+
+/* can node a reach node b within maxhops grid steps (walk/jump/drop links and the running jumps
+   accepted so far)? */
+static qboolean NB_NodesConnected(int a, int b, int maxhops)
+{
+	int head = 0, tail = 0, d;
+	if (a == b)
+		return true;
+	gvisitid++;
+	gvisit[a] = gvisitid;
+	gdepth[a] = 0;
+	gbfs[tail++] = a;
+	while (head < tail)
+	{
+		int n = gbfs[head++];
+		if (gdepth[n] >= maxhops)
+			continue;
+		for (d = 0; d < 4 + gnumjumps; d++)
+		{
+			int m;
+			if (d < 4)
+				m = gn[n].link[d];
+			else
+				m = (gjumps[d - 4].from == n) ? gjumps[d - 4].to : -1;
+			if (m < 0 || gvisit[m] == gvisitid)
+				continue;
+			if (m == b)
+				return true;
+			gvisit[m] = gvisitid;
+			gdepth[m] = gdepth[n] + 1;
+			gbfs[tail++] = m;
+		}
+	}
+	return false;
+}
+
+/* the whole test from node n along u: returns the (slow jump's) landing node or -1, and the node
+   the full speed jump lands on */
+static int NB_TryRunJump(int n, const vec3_t u, const vec3_t target, int *fastland)
+{
+	vec3_t o, edge, start, land;
+	int l, f;
+	VectorSet(o, gn[n].ix * NB_GEN_STEP, gn[n].iy * NB_GEN_STEP, gn[n].z);
+	if (NB_FindEdge(o, u, edge) < 0 || !NB_RunUpClear(o, u))
+		return -1;
+	/* slow and early */
+	VectorSet(start, edge[0] - u[0] * NB_RJ_EARLY, edge[1] - u[1] * NB_RJ_EARLY, edge[2]);
+	if (!NB_SimJump(start, u, NB_RJ_SLOWSPEED, target, land))
+		return -1;
+	l = NB_NodeNear(land, 20);
+	if (l < 0 || (gn[l].flags & (NBAREA_LAVA | NBAREA_SLIME)))
+		return -1;
+	if (gn[l].z > o[2] + NB_RJ_MAXRISE || gn[l].z < o[2] - NB_RJ_MAXFALL)
+		return -1;
+	/* full speed from the edge: must come down on the same floor */
+	if (!NB_SimJump(edge, u, NB_RUNSPEED, target, land))
+		return -1;
+	f = NB_NodeNear(land, 20);
+	if (f < 0 || (gn[f].flags & (NBAREA_LAVA | NBAREA_SLIME)) || fabs(gn[f].z - gn[l].z) > NB_STEPSIZE)
+		return -1;
+	*fastland = f;
+	return l;
+}
+
+/* the jump from node n straight at node t (as a bot runs it, steering at t in the air): the slow
+   and fast jumps, and ones a couple of degrees off the line (a bot's run is never perfectly
+   straight), all come down on t's floor.
+   Returns the distance to t, or -1 */
+static float NB_JumpLineOK(int n, int t)
+{
+	vec3_t u, tpos;
+	float dist;
+	int k;
+	static const float spread[3] = { 0, 0.035f, -0.035f };   /* radians, 2 degrees */
+	VectorSet(tpos, gn[t].ix * NB_GEN_STEP, gn[t].iy * NB_GEN_STEP, gn[t].z);
+	VectorSet(u, (gn[t].ix - gn[n].ix) * (float)NB_GEN_STEP, (gn[t].iy - gn[n].iy) * (float)NB_GEN_STEP, 0);
+	dist = VectorNormalize(u);
+	if (dist < 40)
+		return -1;    /* a standing jump's business */
+	for (k = 0; k < 3; k++)
+	{
+		vec3_t r;
+		int l, f;
+		float c = cos(spread[k]), sn = sin(spread[k]);
+		VectorSet(r, u[0] * c - u[1] * sn, u[0] * sn + u[1] * c, 0);
+		l = NB_TryRunJump(n, r, tpos, &f);
+		if (l < 0 || fabs(gn[l].z - gn[t].z) > NB_STEPSIZE)
+			return -1;
+		if (!NB_NodesConnected(l, t, 32) || !NB_NodesConnected(l, f, 32))
+			return -1;
+	}
+	return dist;
+}
+
+static void NB_RunJumpLinks(void)
+{
+	int n, h;
+	gvisit = BZ_Malloc(sizeof(int) * (gnum + 1));
+	gdepth = BZ_Malloc(sizeof(int) * (gnum + 1));
+	gbfs = BZ_Malloc(sizeof(int) * (gnum + 1));
+	memset(gvisit, 0, sizeof(int) * (gnum + 1));
+	gvisitid = 0;
+	for (n = 0; n < gnum; n++)
+	{
+		vec3_t o;
+		if (gn[n].flags & (NBAREA_WATER | NBAREA_LAVA | NBAREA_SLIME))
+			continue;
+		/* only nodes with an open side (no link, or a drop) */
+		for (h = 0; h < 4; h++)
+			if (gn[n].link[h] < 0 || gn[n].ltype[h] == NBLINK_DROP)
+				break;
+		if (h == 4)
+			continue;
+		VectorSet(o, gn[n].ix * NB_GEN_STEP, gn[n].iy * NB_GEN_STEP, gn[n].z);
+		for (h = 0; h < NB_RJ_HEADINGS; h++)
+		{
+			float ang = h * (2 * M_PI / NB_RJ_HEADINGS), r, dist;
+			vec3_t u;
+			int dx, dy, l, f, t, maxhops;
+			qboolean any = false;
+			VectorSet(u, cos(ang), sin(ang), 0);
+			/* toward an open side */
+			dx = u[0] > 0.3f ? 0 : (u[0] < -0.3f ? 2 : -1);
+			dy = u[1] > 0.3f ? 1 : (u[1] < -0.3f ? 3 : -1);
+			if (!((dx >= 0 && (gn[n].link[dx] < 0 || gn[n].ltype[dx] == NBLINK_DROP))
+				|| (dy >= 0 && (gn[n].link[dy] < 0 || gn[n].ltype[dy] == NBLINK_DROP))))
+				continue;
+			/* cheap first: any floor out there at all? */
+			for (r = 48; r <= NB_RJ_MAXDIST && !any; r += 16)
+			{
+				int ix = (int)floor((o[0] + u[0] * r) / NB_GEN_STEP + 0.5f), iy = (int)floor((o[1] + u[1] * r) / NB_GEN_STEP + 0.5f), m;
+				for (m = ghash[NB_Hash(ix, iy)]; m >= 0; m = gn[m].hashnext)
+					if (gn[m].ix == ix && gn[m].iy == iy && gn[m].z <= o[2] + NB_RJ_MAXRISE && gn[m].z >= o[2] - NB_RJ_MAXFALL)
+					{
+						any = true;
+						break;
+					}
+			}
+			if (!any)
+				continue;
+			l = NB_TryRunJump(n, u, NULL, &f);
+			if (l < 0)
+				continue;
+			/* bots run straight at the landing spot: find a node to aim at that works along exactly
+			   that line. Try the middle of where the slow and fast jumps came down (not the near edge
+			   of the landing floor) and the nodes around it, then where either came down */
+			{
+				int cand[11], nc = 0, c, m, ix, iy;
+				vec3_t mid;
+				VectorSet(mid, (gn[l].ix + gn[f].ix) * 0.5f * NB_GEN_STEP, (gn[l].iy + gn[f].iy) * 0.5f * NB_GEN_STEP, gn[l].z);
+				m = NB_NodeNear(mid, NB_STEPSIZE);
+				if (m >= 0)
+				{
+					cand[nc++] = m;
+					for (iy = -1; iy <= 1; iy++)
+						for (ix = -1; ix <= 1; ix++)
+							if ((ix || iy) && (c = NB_FindNode(gn[m].ix + ix, gn[m].iy + iy, gn[m].z, NB_STEPSIZE)) >= 0)
+								cand[nc++] = c;
+				}
+				cand[nc++] = f;
+				cand[nc++] = l;
+				t = -1;
+				for (c = 0; c < nc && t < 0; c++)
+				{
+					if (!NB_NodesConnected(l, cand[c], 32))
+						continue;
+					dist = NB_JumpLineOK(n, cand[c]);
+					if (dist > 0)
+						t = cand[c];
+				}
+				if (t < 0)
+					continue;
+			}
+			/* already a short walk away (or covered by a jump accepted next door)? */
+			maxhops = (int)((dist * 3 + 256) / NB_GEN_STEP);
+			if (NB_NodesConnected(n, t, maxhops))
+				continue;
+			if (gnumjumps >= gmaxjumps)
+			{
+				gmaxjumps = gmaxjumps ? gmaxjumps * 2 : 64;
+				gjumps = BZ_Realloc(gjumps, sizeof(*gjumps) * gmaxjumps);
+			}
+			gjumps[gnumjumps].from = n;
+			gjumps[gnumjumps].to = t;
+			gnumjumps++;
+			gn[n].isolate = gn[t].isolate = true;
+			if (qw_bot_debug.ival)
+				Con_Printf("nav: running jump %.0f %.0f %.0f -> %.0f %.0f %.0f\n", o[0], o[1], o[2] - 24,
+					gn[t].ix * (float)NB_GEN_STEP, gn[t].iy * (float)NB_GEN_STEP, gn[t].z - 24);
+		}
+	}
+	BZ_Free(gvisit);
+	BZ_Free(gdepth);
+	BZ_Free(gbfs);
+	gvisit = gdepth = gbfs = NULL;
+}
+
+/* ------------------------------------------------------------------------------------------------
  * generation: areas
  */
 typedef struct { int x0, y0, x1, y1; float zmin, zmax; unsigned int flags; } nbrect_t;
@@ -342,6 +733,8 @@ static int NB_WalkNeighbour(int from, int d)
 	int b = gn[from].link[d];
 	if (b < 0 || gn[from].ltype[d] != NBLINK_WALK)
 		return -1;
+	if (gn[from].isolate || gn[b].isolate)
+		return -1;   /* running jump spots stay single cells, so paths aim at exactly them */
 	if (gn[b].link[(d + 2) & 3] != from || gn[b].ltype[(d + 2) & 3] != NBLINK_WALK)
 		return -1;   /* only two-way walk links merge */
 	return b;
@@ -756,7 +1149,7 @@ static void NB_FinishLinks(void)
 		a->numlinks++;
 		nb_mesh.links[i].to = nb_raw[i].to;
 		nb_mesh.links[i].type = nb_raw[i].type;
-		nb_mesh.links[i].cost = (nb_raw[i].type == NBLINK_JUMP) ? 64 : (nb_raw[i].type == NBLINK_PLAT ? 200 : 0);
+		nb_mesh.links[i].cost = (nb_raw[i].type == NBLINK_JUMP) ? 64 : (nb_raw[i].type == NBLINK_PLAT ? 200 : (nb_raw[i].type == NBLINK_RUNJUMP ? 128 : 0));
 	}
 	BZ_Free(nb_raw);
 	nb_raw = NULL;
@@ -778,6 +1171,8 @@ qboolean NBNav_Generate(void)
 	gqueue = BZ_Malloc(sizeof(int) * NB_MAXNODES);
 	memset(ghash, 0xff, sizeof(int) * NB_HASHSIZE);
 	gnum = gqhead = gqtail = 0;
+	gjumps = NULL;
+	gnumjumps = gmaxjumps = 0;
 
 	NB_PassableBegin();
 	NB_SeedFromEntities();
@@ -794,6 +1189,7 @@ qboolean NBNav_Generate(void)
 			gn[n].ltype[d] = lt;
 		}
 	}
+	NB_RunJumpLinks();
 	NB_PassableEnd();
 
 	NB_BuildAreas(&nb_mesh.areas, &nb_mesh.numareas);
@@ -806,6 +1202,8 @@ qboolean NBNav_Generate(void)
 				continue;
 			NB_AddRaw(gn[n].area, gn[m].area, gn[n].ltype[d]);
 		}
+	for (n = 0; n < gnumjumps; n++)
+		NB_AddRaw(gn[gjumps[n].from].area, gn[gjumps[n].to].area, NBLINK_RUNJUMP);
 	NB_BuildGrid();   /* needed by the area lookups in the special links */
 	NB_SpecialLinks();
 	NB_FinishLinks();
@@ -815,9 +1213,13 @@ qboolean NBNav_Generate(void)
 	BZ_Free(gn);
 	BZ_Free(ghash);
 	BZ_Free(gqueue);
+	if (gjumps)
+		BZ_Free(gjumps);
 	gn = NULL;
 	ghash = gqueue = NULL;
-	Con_Printf("nav: %s: %d nodes -> %u areas, %u links (%.1f s)\n", svs.name, gnum, nb_mesh.numareas, nb_mesh.numlinks, Sys_DoubleTime() - t0);
+	gjumps = NULL;
+	Con_Printf("nav: %s: %d nodes -> %u areas, %u links, %d running jumps (%.1f s)\n", svs.name, gnum, nb_mesh.numareas, nb_mesh.numlinks,
+		gnumjumps, Sys_DoubleTime() - t0);
 	return nb_mesh.numareas > 0;
 }
 

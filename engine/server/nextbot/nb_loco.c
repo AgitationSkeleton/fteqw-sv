@@ -179,6 +179,59 @@ qboolean NBLoco_LiftDown(edict_t *lift)
 	return fabs(lift->v->origin[2] - pos2[2]) < 2 && lift->v->velocity[2] == 0;
 }
 
+/* in the air, steering at target: QW air control adds speed only while the velocity along the wish
+   direction is under NB_AIRSPEED, so pushing toward a target ahead does nothing at speed. Push
+   across the line of flight instead (as players strafe), toward the side the target is on; push
+   straight at it when well off course (that brakes an overshoot) */
+void NB_AirSteer(const vec3_t pos, const vec3_t vel, const vec3_t target, vec3_t wish)
+{
+	vec3_t d, v;
+	float sp, along;
+	VectorSet(d, target[0] - pos[0], target[1] - pos[1], 0);
+	VectorNormalize(d);
+	VectorSet(v, vel[0], vel[1], 0);
+	sp = VectorNormalize(v);
+	along = DotProduct(d, v);
+	if (sp > 1 && along > 0.7f)
+	{
+		vec3_t perp;
+		VectorMA(d, -along, v, perp);
+		if (VectorNormalize(perp) > 0.02f)   /* on line (within a degree): nothing to correct */
+		{
+			VectorCopy(perp, wish);
+			return;
+		}
+	}
+	VectorCopy(d, wish);
+}
+
+/* running at a running jump's landing spot: is the floor about to end? (the edge is within one
+   short movement step, NB_RJ_STEP, ahead) */
+qboolean NBLoco_AtJumpEdge(nbbot_t *bot)
+{
+	edict_t *self = NB_Self(bot);
+	nbpath_t *p = &bot->path;
+	vec3_t u, ahead, down;
+	trace_t tr;
+	float look;
+	if (!p->valid || p->cur >= p->numsegs || p->seg[p->cur].how != NBLINK_RUNJUMP || !((int)self->v->flags & FL_ONGROUND))
+		return false;
+	VectorSet(u, p->seg[p->cur].pos[0] - self->v->origin[0], p->seg[p->cur].pos[1] - self->v->origin[1], 0);
+	if (VectorNormalize(u) < 24)
+		return false;
+	/* look where we're actually going (sliding along a wall, that's along the wall) */
+	look = sqrt(self->v->velocity[0] * self->v->velocity[0] + self->v->velocity[1] * self->v->velocity[1]);
+	if (look > 100)
+		VectorSet(u, self->v->velocity[0] / look, self->v->velocity[1] / look, 0);
+	look = look * (NB_RJ_STEP / 1000.0f) + 8;
+	VectorSet(ahead, self->v->origin[0] + u[0] * look, self->v->origin[1] + u[1] * look, self->v->origin[2]);
+	tr = World_Move(&sv.world, self->v->origin, (float*)nb_hmins, (float*)nb_hmaxs, ahead, MOVE_NOMONSTERS, (wedict_t*)self);
+	VectorCopy(tr.endpos, ahead);
+	VectorSet(down, ahead[0], ahead[1], ahead[2] - NB_STEPSIZE - 1);
+	tr = World_Move(&sv.world, ahead, (float*)nb_hmins, (float*)nb_hmaxs, down, MOVE_NOMONSTERS, (wedict_t*)self);
+	return !tr.startsolid && (tr.fraction >= 1 || tr.plane.normal[2] < 0.7f);
+}
+
 qboolean NBLoco_FollowPath(nbbot_t *bot)
 {
 	edict_t *self = NB_Self(bot);
@@ -233,6 +286,8 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 		nbpathseg_t *n = &p->seg[look + 1];
 		if (n->how != NBLINK_WALK || p->seg[look].how != NBLINK_WALK)
 			break;
+		if (n->area < 0 || p->seg[look].area < 0)
+			break;   /* a running jump's run-up point is walked to, not cut */
 		if (!NB_WalkableDirect(self, n->pos))
 			break;
 		look++;
@@ -271,6 +326,17 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 		if (sqrt(d[0] * d[0] + d[1] * d[1]) < 64 && ((int)self->v->flags & FL_ONGROUND))
 			bot->wantjump = true;
 		break;
+	case NBLINK_RUNJUMP:
+		/* run straight at the landing spot (the run-up lined us up) and jump where the floor ends.
+		   A think is 0.1 s (32 units at run speed), too coarse to find the edge: while this is set,
+		   the bot's movement runs in short steps that check for it (NB_RunBotCmd) */
+		if ((int)self->v->flags & FL_ONGROUND)
+		{
+			bot->runjumping = true;
+			if (NBLoco_AtJumpEdge(bot))
+				bot->wantjump = true;
+		}
+		break;
 	case NBLINK_PLAT:
 		{	/* stand on the lift until it has carried us up */
 			nbpathseg_t *s = &p->seg[p->cur];
@@ -287,6 +353,20 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 		break;
 	default:
 		break;
+	}
+	if (p->seg[p->cur].how != NBLINK_RUNJUMP)
+	{	/* nearing a running jump's run-up point: slow down, so the turns are tight and the run
+		   starts straight. At full speed we'd circle the point, or skid off the edge the jump
+		   starts from (run-ups are often on ledges) */
+		int k;
+		for (k = p->cur; k < p->numsegs && k <= p->cur + 3; k++)
+			if (p->seg[k].area < 0)
+			{
+				VectorSubtract(p->seg[k].pos, self->v->origin, d);
+				if (sqrt(d[0] * d[0] + d[1] * d[1]) < 160)
+					bot->wantslow = true;
+				break;
+			}
 	}
 	return true;
 }
@@ -379,7 +459,9 @@ void NBLoco_BuildCmd(nbbot_t *bot, usercmd_t *cmd, float dt)
 	edict_t *self = NB_Self(bot);
 	vec3_t dir, fwd, right;
 	float speed = 400;
+	qboolean slow = bot->wantslow;
 
+	bot->wantslow = false;
 	memset(cmd, 0, sizeof(*cmd));
 	NBBody_Update(bot, dt);
 	cmd->angles[0] = ANGLE2SHORT(bot->viewangles[0]);
@@ -391,6 +473,36 @@ void NBLoco_BuildCmd(nbbot_t *bot, usercmd_t *cmd, float dt)
 		vec3_t flat;
 		VectorSubtract(bot->movegoal, self->v->origin, dir);
 		VectorSet(flat, dir[0], dir[1], 0);
+		if (!((int)self->v->flags & FL_ONGROUND) && bot->path.valid && bot->path.cur < bot->path.numsegs
+			&& bot->path.seg[bot->path.cur].how == NBLINK_RUNJUMP)
+		{	/* in the air on a running jump: steer at the landing spot */
+			vec3_t target, wish;
+			VectorCopy(bot->path.seg[bot->path.cur].pos, target);
+			NB_AirSteer(self->v->origin, self->v->velocity, target, wish);
+			VectorScale(wish, 100, flat);
+		}
+		else if (((int)self->v->flags & FL_ONGROUND) && VectorLength(flat) > 4 && (slow || (bot->path.valid
+			&& bot->path.cur < bot->path.numsegs && bot->path.seg[bot->path.cur].how == NBLINK_RUNJUMP)))
+		{	/* lining up a running jump: control the velocity, not just the heading (heading for the
+			   goal leaves sideways momentum to bleed off by friction alone, which carries a bot off
+			   ledges and spoils the run's line). Ask for the velocity change that's needed: in one
+			   0.1 s step, pmove's acceleration delivers about the wish speed */
+			vec3_t err;
+			float e;
+			VectorNormalize(flat);
+			VectorScale(flat, slow ? 100 : NB_RUNSPEED, err);
+			err[0] -= self->v->velocity[0];
+			err[1] -= self->v->velocity[1];
+			e = VectorNormalize(err);
+			if (e > 30)
+			{
+				speed = bound(30, e + DotProduct(self->v->velocity, err), 400);
+				VectorCopy(err, flat);
+			}
+			else if (slow)
+				speed = 100;
+			VectorScale(flat, 100, flat);   /* (a direction: the length test below wants more than a unit) */
+		}
 		if (VectorLength(flat) > 4)
 		{
 			vec3_t yawonly;
