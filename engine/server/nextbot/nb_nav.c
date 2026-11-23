@@ -163,6 +163,16 @@ static qboolean NB_StandAt(float x, float y, float ztop, float maxdown, vec3_t o
 		return false;
 	*steep = tr.plane.normal[2] < 0.7f;
 	VectorCopy(tr.endpos, out);
+	{	/* the middle of the box must have floor under it too: a spot held up by a sliver of the box on a
+		   ledge or ramp edge (4f4's basement ramps) is one a bot slides off as soon as it moves */
+		static const vec3_t cmins = { -8, -8, -24 }, cmaxs = { 8, 8, 32 };
+		vec3_t below;
+		trace_t ct;
+		VectorSet(below, out[0], out[1], out[2] - NB_STEPSIZE - 2);
+		ct = World_Move(&sv.world, out, (float*)cmins, (float*)cmaxs, below, MOVE_NOMONSTERS, (wedict_t*)sv.world.edicts);
+		if (!ct.startsolid && ct.fraction >= 1)
+			return false;
+	}
 	c = NB_Contents(out);
 	*flags = 0;
 	if (c & FTECONTENTS_LAVA)  *flags |= NBAREA_LAVA;

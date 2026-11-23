@@ -742,7 +742,8 @@ static qboolean TF_ItemTeamMay(tfgoal_t *g, int team)
 static tfgoal_t *TF_ItemToSteal(nbbot_t *bot, edict_t **carrier)
 {
 	int i, team = NB_TeamOf(NB_Self(bot));
-	tfgoal_t *best = NULL;
+	tfgoal_t *best = NULL, *fallback = NULL;
+	float bestscore = 1e18f;
 	*carrier = NULL;
 	for (i = 0; i < tf_numgoals; i++)
 	{
@@ -763,17 +764,40 @@ static tfgoal_t *TF_ItemToSteal(nbbot_t *bot, edict_t **carrier)
 			}
 			continue;
 		}
-		/* is there anywhere to bring it? */
+		if (*carrier)
+			continue;   /* already escorting one */
+		/* is there anywhere to bring it? Of those, the nearest-ish one this bot hasn't just given up on;
+		   a per-bot factor spreads the attackers over the flags (4fort5r has three to choose from) */
 		{
 			int k;
 			for (k = 0; k < tf_numgoals; k++)
 				if (tf_goals[k].kind == TFG_CAPTURE && tf_goals[k].needitem == g->goalno && TF_TeamMay(tf_goals[k].team, team))
-					return g;
+					break;
+			if (k < tf_numgoals)
+			{
+				vec3_t c;
+				float score;
+				unsigned int h = (unsigned int)(bot->clientnum * 2654435761u) ^ (unsigned int)(g->goalno * 40503u);
+				if (NB_IsBadGoal(bot, g->ed))
+				{
+					if (!fallback)
+						fallback = g;
+					continue;
+				}
+				NB_EdCenter(g->ed, c);
+				score = Distance(c, NB_Self(bot)->v->origin) * (0.6f + (float)((h >> 8) % 1000) / 1000.0f);
+				if (score < bestscore)
+				{
+					bestscore = score;
+					best = g;
+				}
+				continue;
+			}
 		}
-		if (!best)
-			best = g;
+		if (!fallback)
+			fallback = g;
 	}
-	return best;
+	return best ? best : fallback;
 }
 
 static tfgoal_t *TF_CaptureFor(nbbot_t *bot, tfgoal_t *item)
@@ -950,7 +974,7 @@ static const tfweapon_t *TF_ChooseWeapon(int pclass, float dist)
  */
 typedef struct { nbaction_t base; } tfroot_t;
 typedef struct { nbaction_t base; const tfweapon_t *weapon; float nextweapon; int strafedir; float nextstrafe; float checkat, checkdist; } tffight_t;
-typedef struct { nbaction_t base; vec3_t pos; float until; edict_t *ent; int kind; float bestd; } tfgoto_t;
+typedef struct { nbaction_t base; vec3_t pos; float until; edict_t *ent; int kind; float bestd; int bestremain; float suspended; } tfgoto_t;
 typedef struct { nbaction_t base; vec3_t spot; float nextspot; float until; } tfdefend_t;
 typedef struct { nbaction_t base; edict_t *patient; float until; } tfheal_t;
 typedef struct { nbaction_t base; vec3_t spot; float until; int step; float steptime; } tfbuild_t;
@@ -1177,6 +1201,7 @@ static nbresult_t Goto_OnStart(nbbot_t *bot, nbaction_t *self, nbaction_t *prior
 	tfgoto_t *g = (tfgoto_t*)self;
 	g->until = NB_Time() + 25;
 	g->bestd = 1e9;
+	g->bestremain = 1 << 30;
 	bot->path.valid = false;
 	return NB_Continue();
 }
@@ -1188,6 +1213,9 @@ static nbresult_t Goto_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	float d;
 	if (NB_Time() > g->until)
 	{
+		if (qw_bot_debug.ival)
+			Con_Printf("[nb] %s goto timeout at %.0f %.0f %.0f heading for %.0f %.0f %.0f (%.0f away)\n", bot->cl->name,
+				me->v->origin[0], me->v->origin[1], me->v->origin[2], g->pos[0], g->pos[1], g->pos[2], Distance(me->v->origin, g->pos));
 		if (g->ent)
 			NB_MarkBadGoal(bot, g->ent, 20);
 		return NB_Done("timeout");
@@ -1250,6 +1278,14 @@ static nbresult_t Goto_Update(nbbot_t *bot, nbaction_t *self, float dt)
 		if (g->until < NB_Time() + 15)
 			g->until = NB_Time() + 15;
 	}
+	/* winding routes (4f4's basements) move away from the goal for a while: fewer path segments
+	   left is progress too */
+	if (bot->path.valid && bot->path.numsegs - bot->path.cur < g->bestremain - 4)
+	{
+		g->bestremain = bot->path.numsegs - bot->path.cur;
+		if (g->until < NB_Time() + 15)
+			g->until = NB_Time() + 15;
+	}
 	if (d < 24 && NB_Time() - self->started > 1)
 	{
 		if (g->ent)
@@ -1265,7 +1301,22 @@ static nbresult_t Goto_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	return NB_Continue();
 }
 static nbresult_t Goto_OnStuck(nbbot_t *bot, nbaction_t *self) { bot->path.valid = false; return NB_Sustain("repath"); }
-static const nbactionvt_t TF_GotoVT = { "Goto", sizeof(tfgoto_t), Goto_OnStart, Goto_Update, NULL, NULL, NULL, Goto_OnStuck };
+/* the clock stops while a fight interrupts the trip (4fort5r's courtyard is one long fight) */
+static nbresult_t Goto_OnSuspend(nbbot_t *bot, nbaction_t *self, nbaction_t *interrupter)
+{
+	((tfgoto_t*)self)->suspended = NB_Time();
+	return NB_Continue();
+}
+static nbresult_t Goto_OnResume(nbbot_t *bot, nbaction_t *self, nbaction_t *interrupter)
+{
+	tfgoto_t *g = (tfgoto_t*)self;
+	if (g->suspended > 0)
+		g->until += NB_Time() - g->suspended;
+	g->suspended = 0;
+	bot->path.valid = false;
+	return NB_Continue();
+}
+static const nbactionvt_t TF_GotoVT = { "Goto", sizeof(tfgoto_t), Goto_OnStart, Goto_Update, NULL, Goto_OnSuspend, Goto_OnResume, Goto_OnStuck };
 
 static nbaction_t *TF_NewGoto(int kind, edict_t *ent, const vec3_t pos, const char *name)
 {
