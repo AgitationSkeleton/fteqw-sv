@@ -22,6 +22,7 @@ nbgame_t nb_game;
 cvar_t qw_bot_enable            = CVARD("qw_bot_enable", "1", "Enable the engine-side bots (0 kicks them all).");
 cvar_t qw_bot_quota             = CVARD("qw_bot_quota", "0", "Desired number of bots.");
 cvar_t qw_bot_quota_mode        = CVARD("qw_bot_quota_mode", "1", "0 = fixed bot count, 1 = fill up to qw_bot_quota total players.");
+cvar_t qw_bot_quota_spawns      = CVARD("qw_bot_quota_spawns", "0", "1 = the quota is the number of player spawn points on the map (team spawns, else deathmatch spawns, else single-player starts) instead of qw_bot_quota. qw_bot_quota_mode still applies.");
 cvar_t qw_bot_skins             = CVARD("qw_bot_skins", "base blue red yellow green", "Skin names for non-TF bots when the server has no skins/ folder.");
 cvar_t qw_bot_random_colors     = CVARD("qw_bot_random_colors", "1", "Non-TF bots get random top/bottom colours.");
 cvar_t qw_bot_meleeonly         = CVARD("qw_bot_meleeonly", "0", "Bots only use the axe.");
@@ -518,6 +519,39 @@ static nbbot_t *NB_PickBotToKick(void)
 	return NULL;
 }
 
+extern cvar_t maxclients;
+/* qw_bot_quota_spawns: how many players the map has spawn points for */
+static int nb_spawncounts[3];   /* team, deathmatch, single-player (for qw_bot_status) */
+static int NB_MapSpawnCount(void)
+{
+	static int cachedcount = -1;
+	static char cachedmap[sizeof(svs.name)];
+	static unsigned int cachededicts;
+	int team = 0, dm = 0, start = 0;
+	unsigned int i;
+	if (cachedcount >= 0 && !strcmp(cachedmap, svs.name) && cachededicts == (unsigned int)sv.world.num_edicts)
+		return cachedcount;
+	for (i = 1; i < (unsigned int)sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		const char *cn;
+		if (ED_ISFREE(e))
+			continue;
+		cn = PR_GetString(svprogfuncs, e->v->classname);
+		if (!strcmp(cn, "info_player_teamspawn"))
+			team++;
+		else if (!strcmp(cn, "info_player_deathmatch"))
+			dm++;
+		else if (!strcmp(cn, "info_player_start") || !strcmp(cn, "info_player_coop"))
+			start++;
+	}
+	cachedcount = team ? team : (dm ? dm : start);
+	nb_spawncounts[0] = team; nb_spawncounts[1] = dm; nb_spawncounts[2] = start;
+	Q_strncpyz(cachedmap, svs.name, sizeof(cachedmap));
+	cachededicts = sv.world.num_edicts;
+	return cachedcount;
+}
+
 static void NB_UpdateQuota(void)
 {
 	int humans, bots, target;
@@ -533,10 +567,12 @@ static void NB_UpdateQuota(void)
 		}
 		return;
 	}
-	target = max(0, qw_bot_quota.ival);
+	target = max(0, qw_bot_quota_spawns.ival ? NB_MapSpawnCount() : qw_bot_quota.ival);
 	if (qw_bot_quota_mode.ival == 1)
 		target = max(0, target - humans);
 	target = min(target, sv.allocated_client_slots - humans);
+	if (maxclients.ival > 0)
+		target = min(target, maxclients.ival - humans);
 	if (bots < target)
 		NB_SpawnBot(0, 0, NULL);    /* one per second, so TF spawns spread out */
 	else if (bots > target)
@@ -1040,6 +1076,9 @@ static void NB_Status_f(void)
 			NBIntention_Describe(b, buf, sizeof(buf)));
 	}
 	Con_Printf("nav: %s %u areas, %u links\n", nb_mesh.mapname, nb_mesh.numareas, nb_mesh.numlinks);
+	if (qw_bot_quota_spawns.ival)
+		Con_Printf("quota from spawns: %d (team %d, deathmatch %d, start %d)\n", NB_MapSpawnCount(),
+			nb_spawncounts[0], nb_spawncounts[1], nb_spawncounts[2]);
 }
 
 static void NB_NavGenerate_f(void)
@@ -1057,6 +1096,7 @@ void NB_Init(void)
 	Cvar_Register(&qw_bot_enable, grp);
 	Cvar_Register(&qw_bot_quota, grp);
 	Cvar_Register(&qw_bot_quota_mode, grp);
+	Cvar_Register(&qw_bot_quota_spawns, grp);
 	Cvar_Register(&qw_bot_skins, grp);
 	Cvar_Register(&qw_bot_random_colors, grp);
 	Cvar_Register(&qw_bot_meleeonly, grp);

@@ -337,6 +337,30 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 				bot->wantjump = true;
 		}
 		break;
+	case NBLINK_DROP:
+		{	/* a drop's point is on the border of the two areas, which can be inside the overhang of
+			   the ledge (cells are 16 units, a player is 32 wide): a bot that reaches it is still
+			   standing on the ledge with nothing left to walk to (hunted's president at his spawn
+			   floor). Until we're falling, aim past it, into the landing area */
+			nbpathseg_t *s = &p->seg[p->cur];
+			VectorSubtract(s->pos, self->v->origin, d);
+			if (((int)self->v->flags & FL_ONGROUND) && self->v->origin[2] - 24 > s->pos[2] + NB_STEPSIZE + 8
+				&& d[0] * d[0] + d[1] * d[1] < 48 * 48 && s->area >= 0)
+			{
+				const nbarea_t *to = &nb_mesh.areas[s->area];
+				vec3_t u, past;
+				int here = NBNav_AreaAt(self->v->origin, 64);
+				VectorSet(u, to->center[0] - s->pos[0], to->center[1] - s->pos[1], 0);
+				if (VectorLength(u) < 4 && here >= 0)
+					VectorSet(u, to->center[0] - nb_mesh.areas[here].center[0], to->center[1] - nb_mesh.areas[here].center[1], 0);
+				if (VectorNormalize(u) > 0.5f)
+				{
+					VectorMA(s->pos, 32, u, past);
+					NBLoco_SetGoal(bot, past);
+				}
+			}
+		}
+		break;
 	case NBLINK_PLAT:
 		{	/* stand on the lift until it has carried us up */
 			nbpathseg_t *s = &p->seg[p->cur];

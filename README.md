@@ -71,6 +71,7 @@ The `qw_bot_*` names are compatible with the earlier fteqw-sv bot build, so exis
 | `qw_bot_enable` | 1 | 0 removes all bots |
 | `qw_bot_quota` | 0 | number of bots |
 | `qw_bot_quota_mode` | 1 | 0 = fixed number of bots, 1 = fill to `qw_bot_quota` players (humans replace bots) |
+| `qw_bot_quota_spawns` | 0 | 1 = the quota is the map's number of player spawn points (team spawns, else deathmatch spawns, else single-player starts) instead of `qw_bot_quota` |
 | `qw_bot_skill` | 0.6 | 0..1: aim speed, reaction time, accuracy |
 | `qw_bot_force_class` (`qw_bot_forceclass`) | "" | TF: class for every bot (`soldier`, `medic`, ... or 1-9) |
 | `qw_bot_stucktime` | 0 | seconds without scoring before a bot is respawned (0 = off) |

@@ -1,5 +1,17 @@
 # fteqw-sv changelog
 
+## Unreleased
+
+* Drops: a bot whose next step is a drop no longer stops on the ledge. The drop point is on the
+  border of two nav areas, which can lie in the overhang of the ledge; a bot that reached it had
+  nothing left to walk to and stood (and hopped) there until something pushed it off. Hunted's
+  president and bodyguards stalled this way on the edge of their spawn floor.
+* `qw_bot_quota_spawns` (default 0): the bot quota follows the map's number of player spawn
+  points (team spawns, else deathmatch spawns, else single-player starts). `qw_bot_quota_mode`
+  still applies, so in fill mode humans replace bots.
+  `qw_bot_status` shows the count. TF maps' short spawn names (`i_p_t`) count as team spawns.
+* The bot quota never exceeds `maxclients`.
+
 ## nextbot-1.1
 
 Nav meshes are now version 9; older `.qnav` files are regenerated automatically the first time
