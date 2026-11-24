@@ -1,6 +1,6 @@
 # fteqw-sv changelog
 
-## Unreleased
+## nextbot-1.2
 
 * Drops: a bot whose next step is a drop no longer stops on the ledge. The drop point is on the
   border of two nav areas, which can lie in the overhang of the ledge; a bot that reached it had
