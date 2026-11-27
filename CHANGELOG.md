@@ -1,6 +1,6 @@
 # fteqw-sv changelog
 
-## Unreleased
+## nextbot-1.3
 
 Found from the heatmap site: cells where bots spent a large share of their time without moving on.
 
