@@ -128,6 +128,8 @@ static qboolean NB_AStar(int s, int g, int team, nbcostfn_t cost, void *ctx, flo
 				continue;
 			if (teambit && (na->teamblock & teambit) && link->to != (unsigned int)g)
 				continue;
+			if (link->to != (unsigned int)g && NBNav_DoorShut(link->to))
+				continue;   /* a shut door only a button or a shot opens */
 			if (teambit && nb_mesh.linkteams && (nb_mesh.linkteams[ca->firstlink + l] & teambit))
 				continue;   /* a teleporter this team can't use */
 			step = cost ? cost(ctx, ca, na, link) : NB_DefaultCost(ca, na, link);

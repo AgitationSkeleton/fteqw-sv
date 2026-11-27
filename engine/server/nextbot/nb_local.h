@@ -118,7 +118,12 @@ typedef struct nbmesh_s
 	unsigned int searchid;
 	unsigned char *areatele;    /* runtime: per area, teams a trigger_teleport there teleports (bit team-1; 0x10 = everyone) */
 	unsigned char *linkteams;   /* runtime: per link, teams that may NOT use it (team-only teleporters); NULL = none */
+	int *areadoor;              /* runtime: per area, entity number of a door nothing walkable opens (button, shootable,
+	                               targeted only by a button) that stands in it while shut; 0 = none */
 } nbmesh_t;
+
+qboolean NBNav_DoorShut(unsigned int area);
+void NBNav_BlockUnderDoor(edict_t *door, const vec3_t ofs);
 
 extern nbmesh_t nb_mesh;
 
@@ -258,6 +263,8 @@ struct nbbot_s
 	int stuckevents;
 	float unstickuntil;   /* sidestepping out of a stuck spot until then */
 	vec3_t unstickgoal;
+	float offmeshuntil;   /* off the mesh (teleported onto a door, knocked onto a ledge): heading for offmeshgoal */
+	vec3_t offmeshgoal;
 	edict_t *badgoal[4];      /* items/goals that failed recently */
 	float badgoaluntil[4];
 	int deaths, suicides;

@@ -96,7 +96,7 @@ The `qw_bot_*` names are compatible with the earlier fteqw-sv bot build, so exis
 | `qw_bot_nav_generate` | regenerate and save the current map's nav mesh |
 | `qw_bot_navcheck` | reachability report: share of the mesh, items and goals reachable from the spawns |
 | `qw_bot_tfinfo` | the TF goals the bots found on this map |
-| `qw_bot_navinfo <slot>`, `qw_bot_navreach x y z`, `qw_bot_pathpts ...`, `qw_bot_pathtest <slot> <goal>` | debugging |
+| `qw_bot_navinfo <slot>`, `qw_bot_navreach x y z`, `qw_bot_pathpts ...`, `qw_bot_pathtest <slot> <goal>`, `qw_bot_rideinfo <slot>` | debugging |
 
 Other changes the bot build makes to the server:
 

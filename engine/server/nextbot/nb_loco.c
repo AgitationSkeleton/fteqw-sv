@@ -395,6 +395,63 @@ qboolean NBLoco_FollowPath(nbbot_t *bot)
 	return true;
 }
 
+/* no path, and not standing on the mesh (teleported onto a floor door over lava, knocked onto a ledge
+   the mesh doesn't cover): head for the nearest area we can get to in a straight line, jumping up
+   steps, and path from there. Before this such a bot stood (and hopped) there until it died. */
+static qboolean NBLoco_BackToMesh(nbbot_t *bot)
+{
+	static const vec3_t hmins = { -16, -16, -24 }, hmaxs = { 16, 16, 32 };
+	edict_t *self = NB_Self(bot);
+	float now = NB_Time();
+	unsigned int i;
+	float bestd = 320 * 320;
+	vec3_t start, best;
+	qboolean found = false;
+	if (NBNav_AreaAt(self->v->origin, 64) >= 0 || !NB_IsAlive(self))
+		return false;
+	if (now < bot->offmeshuntil)
+	{
+		NBLoco_SetGoal(bot, bot->offmeshgoal);
+		bot->path.valid = false;
+		return true;
+	}
+	VectorCopy(self->v->origin, start);
+	start[2] += NB_JUMPHEIGHT - 4;   /* what a jump clears */
+	for (i = 0; i < nb_mesh.numareas; i++)
+	{
+		nbarea_t *a = &nb_mesh.areas[i];
+		vec3_t c, d, end;
+		trace_t tr;
+		if (a->flags & (NBAREA_LAVA | NBAREA_SLIME | NBAREA_HURT | NBAREA_TRAP))
+			continue;
+		c[0] = bound(a->mins[0] + 8, self->v->origin[0], a->maxs[0] - 8);
+		c[1] = bound(a->mins[1] + 8, self->v->origin[1], a->maxs[1] - 8);
+		c[2] = NBNav_FloorZ(a, c[0], c[1]);
+		if (c[2] > self->v->origin[2] - 24 + NB_JUMPHEIGHT - 4)
+			continue;   /* too high to jump up to */
+		VectorSubtract(c, self->v->origin, d);
+		d[2] = 0;
+		if (DotProduct(d, d) >= bestd)
+			continue;
+		VectorSet(end, c[0], c[1], start[2]);
+		tr = World_Move(&sv.world, start, (float*)hmins, (float*)hmaxs, end, MOVE_NOMONSTERS, (wedict_t*)self);
+		if (tr.startsolid || tr.fraction < 1)
+			continue;
+		bestd = DotProduct(d, d);
+		VectorCopy(c, best);
+		found = true;
+	}
+	if (!found)
+		return false;
+	VectorCopy(best, bot->offmeshgoal);
+	bot->offmeshuntil = now + 1.5f;
+	NBLoco_SetGoal(bot, best);
+	bot->path.valid = false;
+	if (best[2] > self->v->origin[2] - 24 + NB_STEPSIZE && ((int)self->v->flags & FL_ONGROUND))
+		bot->wantjump = true;
+	return true;
+}
+
 qboolean NBLoco_PathTo(nbbot_t *bot, const vec3_t goal, float repath)
 {
 	edict_t *self = NB_Self(bot);
@@ -405,6 +462,8 @@ qboolean NBLoco_PathTo(nbbot_t *bot, const vec3_t goal, float repath)
 		team = NB_TeamOf(self);
 		if (!NBPath_Compute(&bot->path, self->v->origin, goal, team, NULL, NULL))
 		{
+			if (NBLoco_BackToMesh(bot))
+				return true;
 			NBIntention_OnPathFailed(bot);
 			return false;
 		}

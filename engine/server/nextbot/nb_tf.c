@@ -259,6 +259,11 @@ static void TF_Census(void)
 					|| c[1] < d->v->absmin[1] - ofs[1] - 16 || c[1] > d->v->absmax[1] - ofs[1] + 16)
 					continue;
 			}
+			{	/* paths go round it while it's there */
+				vec3_t ofs;
+				VectorSubtract(d->v->origin, p1, ofs);
+				NBNav_BlockUnderDoor(d, ofs);
+			}
 			tf_vehicles[tf_numvehicles].door = d;
 			tf_vehicles[tf_numvehicles].trigger = tr;
 			tf_vehicles[tf_numvehicles].team = (int)NB_GetFloat(tr, "team_no");
@@ -1735,7 +1740,72 @@ static void TF_SpyDisguise(nbbot_t *bot)
 }
 
 /* --- RideVehicle (border1's truck) ------------------------------------------------------------- */
-typedef struct { nbaction_t base; int vehicle; float nextjump; float until; } tfride_t;
+typedef struct { nbaction_t base; int vehicle; float nextjump; float until;
+	qboolean entrytested, hasentry; int stage; vec3_t entry, inner; } tfride_t;
+
+/* the way into a vehicle at its start: border1's truck is a closed box open only at the back (a jump
+   up onto the bed), with the trigger in the cab beyond a low opening. From each side: step up from
+   just outside it, straight into the box, then on to the trigger, all with the player hull. */
+static qboolean Ride_FindEntry(edict_t *me, edict_t *door, edict_t *trigger, vec3_t entry, vec3_t inner)
+{
+	static const vec3_t hmins = { -16, -16, -24 }, hmaxs = { 16, 16, 32 };
+	float best = 1e9;
+	int side;
+	qboolean found = false;
+	vec3_t trig;
+	NB_EdCenter(trigger, trig);
+	for (side = 0; side < 4; side++)
+	{
+		int ax = side < 2 ? 0 : 1, o = !ax;
+		float sign = (side & 1) ? 1 : -1;
+		vec3_t e, up, in, t;
+		trace_t tr;
+		e[o] = (door->v->absmin[o] + door->v->absmax[o]) * 0.5f;
+		e[ax] = (sign > 0 ? door->v->absmax[ax] : door->v->absmin[ax]) + sign * 40;
+		{	/* stand on the ground there: from the vehicle's bottom + a step, down */
+			vec3_t top, bot;
+			VectorSet(top, e[0], e[1], door->v->absmin[2] + 24 + NB_STEPSIZE + 8);
+			VectorSet(bot, e[0], e[1], door->v->absmin[2] + 24 - 64);
+			tr = World_Move(&sv.world, top, (float*)hmins, (float*)hmaxs, bot, MOVE_NOMONSTERS, (wedict_t*)me);
+			if (tr.startsolid || tr.fraction >= 1)
+				continue;
+			e[2] = tr.endpos[2];
+		}
+		VectorCopy(e, up);
+		up[2] += NB_JUMPHEIGHT;
+		tr = World_Move(&sv.world, e, (float*)hmins, (float*)hmaxs, up, MOVE_NOMONSTERS, (wedict_t*)me);
+		if (tr.startsolid || tr.fraction < 1)
+		{
+			if (qw_bot_debug.ival > 1) Con_Printf("[nb] entry side %d: no room to jump at %.0f %.0f %.0f\n", side, e[0], e[1], e[2]);
+			continue;
+		}
+		VectorCopy(up, in);
+		in[ax] = (sign > 0 ? door->v->absmax[ax] : door->v->absmin[ax]) - sign * 48;
+		tr = World_Move(&sv.world, up, (float*)hmins, (float*)hmaxs, in, MOVE_NOMONSTERS, (wedict_t*)me);
+		if (tr.startsolid || tr.fraction < 1)
+		{
+			if (qw_bot_debug.ival > 1) Con_Printf("[nb] entry side %d: in blocked at %.0f %.0f %.0f\n", side, tr.endpos[0], tr.endpos[1], tr.endpos[2]);
+			continue;
+		}
+		VectorSet(t, trig[0], trig[1], in[2]);
+		tr = World_Move(&sv.world, in, (float*)hmins, (float*)hmaxs, t, MOVE_NOMONSTERS, (wedict_t*)me);
+		/* the trigger fires once the hull overlaps it: getting all the way to its middle isn't needed */
+		if (tr.startsolid || tr.endpos[0] + 16 < trigger->v->absmin[0] || tr.endpos[0] - 16 > trigger->v->absmax[0]
+			|| tr.endpos[1] + 16 < trigger->v->absmin[1] || tr.endpos[1] - 16 > trigger->v->absmax[1])
+		{
+			if (qw_bot_debug.ival > 1) Con_Printf("[nb] entry side %d: to trigger blocked at %.0f %.0f %.0f\n", side, tr.endpos[0], tr.endpos[1], tr.endpos[2]);
+			continue;
+		}
+		if (Distance(e, me->v->origin) < best)
+		{
+			best = Distance(e, me->v->origin);
+			VectorCopy(e, entry);
+			VectorCopy(in, inner);
+			found = true;
+		}
+	}
+	return found;
+}
 
 static qboolean TF_InVehicle(edict_t *me, edict_t *door)
 {
@@ -1803,6 +1873,45 @@ static nbresult_t Ride_Update(nbbot_t *bot, nbaction_t *self, float dt)
 			NBLoco_PathTo(bot, home, 2);
 		else
 			bot->hasmovegoal = false;
+		return NB_Continue();
+	}
+	/* get in through the side it's open on, if one is: walk to just outside it on the mesh, jump in,
+	   go through the inside to the trigger */
+	if (!r->entrytested)
+	{
+		r->entrytested = true;
+		r->hasentry = Ride_FindEntry(me, door, v->trigger, r->entry, r->inner);
+		if (qw_bot_debug.ival)
+			Con_Printf("[nb] %s vehicle entry: %s %.0f %.0f %.0f -> %.0f %.0f %.0f\n", bot->cl->name, r->hasentry ? "found" : "none",
+				r->entry[0], r->entry[1], r->entry[2], r->inner[0], r->inner[1], r->inner[2]);
+	}
+	if (r->hasentry)
+	{
+		float de = sqrt((me->v->origin[0] - r->entry[0]) * (me->v->origin[0] - r->entry[0]) + (me->v->origin[1] - r->entry[1]) * (me->v->origin[1] - r->entry[1]));
+		float di = sqrt((me->v->origin[0] - r->inner[0]) * (me->v->origin[0] - r->inner[0]) + (me->v->origin[1] - r->inner[1]) * (me->v->origin[1] - r->inner[1]));
+		if (r->stage == 0 && de < 32)
+			r->stage = 1;
+		if (r->stage == 1 && de > 48 && me->v->origin[2] < r->inner[2] - NB_JUMPHEIGHT + 16 && ((int)me->v->flags & FL_ONGROUND))
+			r->stage = 0;   /* still at ground level away from the way in (pushed out, or the vehicle came back
+			                   over us): walk back round to it */
+		if (r->stage == 0)
+		{
+			if (TF_WantsFight(bot))
+				return NB_SuspendFor(NBAction_New(&TF_FightVT), "enemy on the way to the vehicle");
+			if (!NBLoco_PathTo(bot, r->entry, 2))
+			{
+				NBLoco_SetGoal(bot, r->entry);
+				bot->path.valid = false;
+			}
+			return NB_Continue();
+		}
+		NBLoco_SetGoal(bot, di < 24 ? trig : r->inner);
+		bot->path.valid = false;
+		if (((int)me->v->flags & FL_ONGROUND) && now >= r->nextjump && me->v->origin[2] < r->inner[2] - NB_JUMPHEIGHT + 8)
+		{	/* still at ground level: hop up onto the bed */
+			bot->wantjump = true;
+			r->nextjump = now + 0.6f;
+		}
 		return NB_Continue();
 	}
 	/* get in: walk up to it on the mesh, then climb in directly with jumps */
@@ -2034,8 +2143,35 @@ static void TF_PathTest_f(void)
 	Z_Free(path);
 }
 
+/* qw_bot_rideinfo <slot>: the way into each escape vehicle from where that bot stands */
+static void TF_RideInfo_f(void)
+{
+	int slot = atoi(Cmd_Argv(1)), vi;
+	int olddebug = qw_bot_debug.ival;
+	TF_Census();
+	if (slot < 0 || slot >= NB_MAX_BOTS || !nb_bots[slot].inuse)
+	{
+		Con_Printf("usage: qw_bot_rideinfo <botslot>\n");
+		return;
+	}
+	qw_bot_debug.ival = 2;
+	for (vi = 0; vi < tf_numvehicles; vi++)
+	{
+		vec3_t trig, e, in;
+		edict_t *door = tf_vehicles[vi].door;
+		qboolean ok;
+		NB_EdCenter(tf_vehicles[vi].trigger, trig);
+		Con_Printf("vehicle %d team %d: box %.0f %.0f %.0f .. %.0f %.0f %.0f, trigger %.0f %.0f %.0f\n", vi, tf_vehicles[vi].team,
+			door->v->absmin[0], door->v->absmin[1], door->v->absmin[2], door->v->absmax[0], door->v->absmax[1], door->v->absmax[2], trig[0], trig[1], trig[2]);
+		ok = Ride_FindEntry(nb_bots[slot].cl->edict, door, tf_vehicles[vi].trigger, e, in);
+		Con_Printf("  entry %s %.0f %.0f %.0f -> %.0f %.0f %.0f\n", ok ? "found" : "none", e[0], e[1], e[2], in[0], in[1], in[2]);
+	}
+	qw_bot_debug.ival = olddebug;
+}
+
 void NBTF_InitCommands2(void)
 {
 	Cmd_AddCommandD("qw_bot_pathtest", TF_PathTest_f, "qw_bot_pathtest <botslot> <goal#>");
+	Cmd_AddCommandD("qw_bot_rideinfo", TF_RideInfo_f, "qw_bot_rideinfo <botslot>: the way into each escape vehicle");
 }
 #endif

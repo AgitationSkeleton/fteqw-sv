@@ -289,19 +289,25 @@ static void NB_Seed(const vec3_t p)
 	unsigned int flags;
 	qboolean steep;
 	int ix = (int)floor(p[0] / NB_GEN_STEP + 0.5f), iy = (int)floor(p[1] / NB_GEN_STEP + 0.5f);
-	int dx, dy;
-	/* the exact grid column may be inside a wall next to the item: try the 3x3 around it */
-	for (dy = 0; dy < 3; dy++)
-		for (dx = 0; dx < 3; dx++)
-		{
-			int cx = ix + (dx == 0 ? 0 : (dx == 1 ? 1 : -1));
-			int cy = iy + (dy == 0 ? 0 : (dy == 1 ? 1 : -1));
-			if (NB_StandAt(cx * NB_GEN_STEP, cy * NB_GEN_STEP, p[2] + 40, 300, dest, &flags, &steep) && !steep && !(flags & NBAREA_LAVA))
+	int dx, dy, h;
+	/* start the trace down a little above the entity (items sit on the floor, spawn origins are a
+	   standing player's), or just above it under a low ceiling: from +40 the hull's top is at +72, so
+	   in a 96 high corridor a spawn point's trace started inside the ceiling and the spawn, and any
+	   room reachable only from it, got no mesh (dm3's spawn on the ledge above the lift) */
+	static const float heights[2] = { 40, 4 };
+	for (h = 0; h < 2; h++)
+		/* the exact grid column may be inside a wall next to the item: try the 3x3 around it */
+		for (dy = 0; dy < 3; dy++)
+			for (dx = 0; dx < 3; dx++)
 			{
-				NB_AddNode(cx, cy, dest[2], flags);
-				return;
+				int cx = ix + (dx == 0 ? 0 : (dx == 1 ? 1 : -1));
+				int cy = iy + (dy == 0 ? 0 : (dy == 1 ? 1 : -1));
+				if (NB_StandAt(cx * NB_GEN_STEP, cy * NB_GEN_STEP, p[2] + heights[h], 300, dest, &flags, &steep) && !steep && !(flags & NBAREA_LAVA))
+				{
+					NB_AddNode(cx, cy, dest[2], flags);
+					return;
+				}
 			}
-		}
 }
 
 static void NB_SeedFromEntities(void)
@@ -1360,6 +1366,7 @@ void NBNav_Free(void)
 	if (nb_mesh.gridareas) Z_Free(nb_mesh.gridareas);
 	if (nb_mesh.linkteams) Z_Free(nb_mesh.linkteams);
 	if (nb_mesh.areatele) Z_Free(nb_mesh.areatele);
+	if (nb_mesh.areadoor) Z_Free(nb_mesh.areadoor);
 	memset(&nb_mesh, 0, sizeof(nb_mesh));
 }
 
@@ -1526,9 +1533,102 @@ static void NBNav_MarkTraps(void)
 	Z_Free(start); Z_Free(fill); Z_Free(rev); Z_Free(queue); Z_Free(ok);
 }
 
+/* doors a bot can't open by walking up to them: a func_door with a targetname that no trigger (or TF
+   goal) fires, i.e. only a button opens it (dm1's bars), or a shootable one. While such a door is shut
+   the areas it stands in are closed to paths; before this bots walked into it and waited there. */
+static qboolean NB_DoorTriggered(const char *targetname)
+{
+	int k;
+	for (k = 1; k < sv.world.num_edicts; k++)
+	{
+		edict_t *t = EDICT_NUM_PB(svprogfuncs, k);
+		const char *cn;
+		if (ED_ISFREE(t) || strcmp(PR_GetString(svprogfuncs, t->v->target), targetname))
+			continue;
+		cn = NB_Classname(t);
+		if (strcmp(cn, "func_button") && strcmp(cn, "button"))
+			return true;   /* trigger_multiple, trigger_once, a TF goal, a relay...: assume it opens for players */
+	}
+	return false;
+}
+
+static void NBNav_MarkLockedDoors(void)
+{
+	int i;
+	unsigned int j, n = 0;
+	if (nb_mesh.areadoor)
+		Z_Free(nb_mesh.areadoor);
+	nb_mesh.areadoor = NULL;
+	if (!nb_mesh.numareas)
+		return;
+	for (i = 1; i < sv.world.num_edicts; i++)
+	{
+		edict_t *e = EDICT_NUM_PB(svprogfuncs, i);
+		const char *cn, *tn;
+		if (ED_ISFREE(e))
+			continue;
+		cn = NB_Classname(e);
+		if (strncmp(cn, "func_door", 9) && strcmp(cn, "door"))
+			continue;
+		tn = PR_GetString(svprogfuncs, e->v->targetname);
+		if (!(e->v->health > 0 || (*tn && !NB_DoorTriggered(tn))))
+			continue;
+		for (j = 0; j < nb_mesh.numareas; j++)
+			if (NB_RectOverlap(&nb_mesh.areas[j], e->v->absmin, e->v->absmax, 0))
+			{
+				if (!nb_mesh.areadoor)
+					nb_mesh.areadoor = Z_Malloc(nb_mesh.numareas * sizeof(int));
+				nb_mesh.areadoor[j] = i;
+				n++;
+			}
+	}
+	if (qw_bot_debug.ival && n)
+		Con_Printf("nav: %u areas behind doors only a button or a shot opens\n", n);
+}
+
+/* a door that is in the way where it stands (an escape vehicle at its start, border1's truck): the mesh
+   is made with doors passable, so paths would lead through it. ofs: where it is now minus where to mark */
+void NBNav_BlockUnderDoor(edict_t *door, const vec3_t ofs)
+{
+	unsigned int j;
+	vec3_t mins, maxs;
+	int num = NUM_FOR_EDICT(svprogfuncs, door);
+	if (!nb_mesh.numareas)
+		return;
+	VectorSubtract(door->v->absmin, ofs, mins);
+	VectorSubtract(door->v->absmax, ofs, maxs);
+	for (j = 0; j < nb_mesh.numareas; j++)
+		if (NB_RectOverlap(&nb_mesh.areas[j], mins, maxs, 0))
+		{
+			if (!nb_mesh.areadoor)
+				nb_mesh.areadoor = Z_Malloc(nb_mesh.numareas * sizeof(int));
+			nb_mesh.areadoor[j] = num;
+		}
+}
+
+/* is a door that only a button or a shot opens shut across this area right now? */
+qboolean NBNav_DoorShut(unsigned int area)
+{
+	edict_t *e;
+	nbarea_t *a;
+	float fz;
+	if (!nb_mesh.areadoor || !nb_mesh.areadoor[area] || nb_mesh.areadoor[area] >= sv.world.num_edicts)
+		return false;
+	e = EDICT_NUM_PB(svprogfuncs, nb_mesh.areadoor[area]);
+	if (ED_ISFREE(e))
+		return false;
+	a = &nb_mesh.areas[area];
+	fz = min(min(a->z[0], a->z[1]), min(a->z[2], a->z[3]));
+	/* where the door is now: in the area's footprint, from above ankle height to below head height */
+	return a->maxs[0] > e->v->absmin[0] && a->mins[0] < e->v->absmax[0]
+		&& a->maxs[1] > e->v->absmin[1] && a->mins[1] < e->v->absmax[1]
+		&& e->v->absmin[2] < fz + 48 && e->v->absmax[2] > fz + 8;
+}
+
 void NBNav_MarkTeleporters(void)
 {
 	NBNav_MarkTraps();
+	NBNav_MarkLockedDoors();
 	int i;
 	unsigned int j;
 	if (nb_mesh.areatele)

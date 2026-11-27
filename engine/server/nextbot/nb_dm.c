@@ -295,11 +295,11 @@ void NB_LeadTarget(nbbot_t *bot, edict_t *enemy, float speed, vec3_t out)
 /* ------------------------------------------------------------------------------------------------
  * actions
  */
-typedef struct { nbaction_t base; float nextweapon; int strafedir; float nextstrafe; const nbweapon_t *weapon; } nbdmattack_t;
+typedef struct { nbaction_t base; float nextweapon; int strafedir; float nextstrafe; const nbweapon_t *weapon; float checkat, checkdist; } nbdmattack_t;
 typedef struct { nbaction_t base; vec3_t where; float until; } nbchase_t;
 typedef struct { nbaction_t base; edict_t *item; float until; vec3_t pos; } nbgetitem_t;
 typedef struct { nbaction_t base; vec3_t where; float until; } nbroam_t;
-typedef struct { nbaction_t base; float nextitemcheck; } nbdmroot_t;
+typedef struct { nbaction_t base; float nextitemcheck; edict_t *ignoreenemy; float ignoreuntil; } nbdmroot_t;
 
 static const nbactionvt_t NBDM_AttackVT, NBDM_ChaseVT, NBDM_GetItemVT, NBDM_RoamVT, NBDM_RootVT;
 
@@ -413,7 +413,33 @@ static nbresult_t Attack_Update(nbbot_t *bot, nbaction_t *self, float dt)
 	if (now - bot->enemyfirstseen > bot->reaction && NBBody_IsAimedAt(bot, aim, 6 + (1 - bot->skill) * 10)
 		&& !((a->weapon->item == IT_ROCKET_LAUNCHER || a->weapon->item == IT_GRENADE_LAUNCHER) && dist < 140))
 		bot->buttons |= 1;
-	NB_CombatMove(bot, dist, a->weapon->mindist + 50, a->weapon == &nb_dmweapons[countof(nb_dmweapons) - 1] ? 48 : a->weapon->maxdist * 0.6f, &a->strafedir, &a->nextstrafe);
+	/* a stand-off (across a gap, ledge to ledge) that isn't getting closer: leave this enemy alone for a
+	   while and go on (before this both bots stood shooting at each other's ledge for minutes) */
+	if (!a->checkat)
+	{
+		a->checkat = now + 5;
+		a->checkdist = dist;
+	}
+	else if (now >= a->checkat)
+	{
+		if (dist > 350 && dist > a->checkdist - 96 && (dist > 600 || now - bot->lastpain > 1.0f))
+		{
+			nbaction_t *r;
+			for (r = self; r; r = r->below)
+				if (r->vt == &NBDM_RootVT)
+				{
+					((nbdmroot_t*)r)->ignoreenemy = e;
+					((nbdmroot_t*)r)->ignoreuntil = now + 8 + frandom() * 4;
+					return NB_Done("stand-off");
+				}
+		}
+		a->checkat = now + 5;
+		a->checkdist = dist;
+	}
+	if (dist > a->weapon->maxdist * 0.6f + 150 && NBLoco_PathTo(bot, e->v->origin, 1))
+		;	/* too far for this weapon: walk the mesh toward them instead of strafing at a ledge */
+	else
+		NB_CombatMove(bot, dist, a->weapon->mindist + 50, a->weapon == &nb_dmweapons[countof(nb_dmweapons) - 1] ? 48 : a->weapon->maxdist * 0.6f, &a->strafedir, &a->nextstrafe);
 	/* very hurt with a strong enemy: go get health */
 	if (me->v->health < 30 && e->v->health > 60)
 	{
@@ -642,7 +668,15 @@ static nbresult_t Root_OnSight(nbbot_t *bot, nbaction_t *self, edict_t *who)
 	return NB_Continue();
 }
 
-static const nbactionvt_t NBDM_RootVT = { "DM", sizeof(nbdmroot_t), Root_OnStart, Root_Update, NULL, NULL, Root_OnResume, NULL, NULL, Root_OnSight };
+static int Root_ShouldAttack(nbbot_t *bot, nbaction_t *self, edict_t *enemy)
+{
+	nbdmroot_t *r = (nbdmroot_t*)self;
+	if (enemy == r->ignoreenemy && NB_Time() < r->ignoreuntil && !(bot->lastattacker == enemy && NB_Time() - bot->lastpain < 2))
+		return 0;   /* a stand-off with them went nowhere (unless they hit us since) */
+	return -1;
+}
+
+static const nbactionvt_t NBDM_RootVT = { "DM", sizeof(nbdmroot_t), Root_OnStart, Root_Update, NULL, NULL, Root_OnResume, NULL, NULL, Root_OnSight, NULL, Root_ShouldAttack };
 
 /* roam also breaks off for enemies and items */
 nbaction_t *NBDM_RootAction(void)
